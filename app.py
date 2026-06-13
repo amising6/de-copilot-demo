@@ -7,7 +7,19 @@ st.set_page_config(
     layout="wide"
 )
 
+# --------------------------------------------------
+# Header
+# --------------------------------------------------
+
 st.title("⚙️ DE Copilot")
+
+st.markdown(
+    "[🌐 DataEngineeringCopilot.com](https://dataengineeringcopilot.com)"
+)
+
+st.markdown(
+    "[💻 GitHub Repository](https://github.com/amising6/de-copilot-demo)"
+)
 
 st.markdown("""
 ### Enterprise STTM Factory
@@ -25,55 +37,63 @@ Upload an STTM and automatically generate:
 ✅ Data Quality Rules
 """)
 
+# --------------------------------------------------
+# Upload File
+# --------------------------------------------------
+
 uploaded_file = st.file_uploader(
     "Upload STTM CSV",
     type=["csv"]
 )
 
+# --------------------------------------------------
+# Process File
+# --------------------------------------------------
+
 if uploaded_file:
 
-    df = pd.read_csv(uploaded_file)
+    try:
 
-    st.success("STTM Uploaded Successfully")
+        df = pd.read_csv(uploaded_file)
 
-    st.subheader("Uploaded STTM")
+        st.success("STTM Uploaded Successfully")
 
-    st.dataframe(df)
+        st.subheader("Uploaded STTM")
 
-    target_table = df["Target_Table"].iloc[0]
+        st.dataframe(df)
 
-    ddl = f"CREATE OR REPLACE TABLE {target_table} (\n"
+        # ------------------------------------------
+        # Target Table
+        # ------------------------------------------
 
-    cols = []
+        target_table = df["Target_Table"].iloc[0]
 
-    for _, row in df.iterrows():
+        # ------------------------------------------
+        # Generate DDL
+        # ------------------------------------------
 
-        nullable = ""
+        ddl = f"CREATE OR REPLACE TABLE {target_table} (\n"
 
-        if row["Nullable"] == "N":
-            nullable = "NOT NULL"
+        ddl_columns = []
 
-        cols.append(
-            f"{row['Target_Column']} {row['Data_Type']} {nullable}"
-        )
+        for _, row in df.iterrows():
 
-    ddl += ",\n".join(cols)
+            nullable = ""
 
-    ddl += "\n);"
+            if str(row["Nullable"]).upper() == "N":
+                nullable = "NOT NULL"
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "Snowflake DDL",
-        "Snowflake SQL",
-        "Data Dictionary",
-        "Technical Spec",
-        "DQ Rules"
-    ])
+            ddl_columns.append(
+                f"{row['Target_Column']} {row['Data_Type']} {nullable}"
+            )
 
-    with tab1:
+        ddl += ",\n".join(ddl_columns)
 
-        st.code(ddl, language="sql")
+        ddl += "\n);"
 
-    with tab2:
+        # ------------------------------------------
+        # Generate SQL
+        # ------------------------------------------
 
         sql_lines = []
 
@@ -93,31 +113,120 @@ SELECT
 FROM {df['Source_Table'].iloc[0]};
 """
 
-        st.code(sql, language="sql")
+        # ------------------------------------------
+        # Data Dictionary
+        # ------------------------------------------
 
-    with tab3:
-
-        st.dataframe(
-            df[
-                [
-                    "Target_Column",
-                    "Data_Type",
-                    "Business_Definition"
-                ]
+        dictionary_df = df[
+            [
+                "Target_Column",
+                "Data_Type",
+                "Business_Definition"
             ]
-        )
+        ]
 
-    with tab4:
+        # ------------------------------------------
+        # DQ Rules
+        # ------------------------------------------
 
-        st.dataframe(df)
-
-    with tab5:
-
-        st.dataframe(
-            df[
-                [
-                    "Target_Column",
-                    "DQ_Rule"
-                ]
+        dq_df = df[
+            [
+                "Target_Column",
+                "DQ_Rule"
             ]
-        )
+        ]
+
+        # ------------------------------------------
+        # Tabs
+        # ------------------------------------------
+
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "Snowflake DDL",
+            "Snowflake SQL",
+            "Data Dictionary",
+            "Technical Spec",
+            "DQ Rules"
+        ])
+
+        # ------------------------------------------
+        # DDL TAB
+        # ------------------------------------------
+
+        with tab1:
+
+            st.code(ddl, language="sql")
+
+            st.download_button(
+                "📥 Download DDL",
+                ddl,
+                file_name="snowflake_ddl.sql",
+                mime="text/plain"
+            )
+
+        # ------------------------------------------
+        # SQL TAB
+        # ------------------------------------------
+
+        with tab2:
+
+            st.code(sql, language="sql")
+
+            st.download_button(
+                "📥 Download SQL",
+                sql,
+                file_name="snowflake_sql.sql",
+                mime="text/plain"
+            )
+
+        # ------------------------------------------
+        # DATA DICTIONARY TAB
+        # ------------------------------------------
+
+        with tab3:
+
+            st.dataframe(dictionary_df)
+
+            st.download_button(
+                "📥 Download Data Dictionary",
+                dictionary_df.to_csv(index=False),
+                file_name="data_dictionary.csv",
+                mime="text/csv"
+            )
+
+        # ------------------------------------------
+        # TECHNICAL SPEC TAB
+        # ------------------------------------------
+
+        with tab4:
+
+            st.dataframe(df)
+
+            st.download_button(
+                "📥 Download Technical Spec",
+                df.to_csv(index=False),
+                file_name="technical_spec.csv",
+                mime="text/csv"
+            )
+
+        # ------------------------------------------
+        # DQ RULES TAB
+        # ------------------------------------------
+
+        with tab5:
+
+            st.dataframe(dq_df)
+
+            st.download_button(
+                "📥 Download DQ Rules",
+                dq_df.to_csv(index=False),
+                file_name="dq_rules.csv",
+                mime="text/csv"
+            )
+
+    except Exception as e:
+
+        st.error(f"Error processing file: {e}")
+
+else:
+
+    st.info("Upload a sample STTM CSV to get started.")

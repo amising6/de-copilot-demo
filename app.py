@@ -36,15 +36,10 @@ def normalize_string(s):
     return str(s).strip().upper().replace(" ", "_").replace("-", "_").replace("/", "_")
 
 def guess_columns_heuristically(uploaded_headers):
-    """
-    Ranks headers based on engineering weight parameters to prevent 
-    false positives (e.g., matching a logical View or ID over a Physical column name).
-    """
     guessed_mapping = {}
     normalized_headers = [normalize_string(h) for h in uploaded_headers]
     header_map = dict(zip(normalized_headers, uploaded_headers))
 
-    # Priority ranking structures: First items in list are heavily preferred
     targets = {
         "SOURCE_TABLE": ["SRC_TABLE_PHYSICAL_NAME", "SOURCE_TABLE_PHYSICAL_NAME", "SOURCE_TABLE_PHYSICAL", "SRC_PHYS_NAME", "SRC_TBL", "SRC_TABLE", "SOURCE_TABLE", "SOURCE_TABLE_VIEW", "SOURCE_ENTITY"],
         "SOURCE_COLUMN": ["SRC_COLUMN_PHYSICAL_NAME", "SOURCE_COLUMN_PHYSICAL_NAME", "SOURCE_COLUMN_PHYSICAL", "SRC_COL_PHYS", "SRC_COL", "SRC_COLUMN", "SOURCE_COLUMN", "SOURCE_FIELD"],
@@ -62,15 +57,12 @@ def guess_columns_heuristically(uploaded_headers):
 
     for key, patterns in targets.items():
         matched = False
-        
-        # Pass 1: Look for highly weighted exact pattern matches
         for pattern in patterns:
             if pattern in header_map:
                 guessed_mapping[key] = header_map[pattern]
                 matched = True
                 break
         
-        # Pass 2: Fall back to substring matching only if absolute targets fail
         if not matched:
             best_match = None
             highest_priority_idx = 999
@@ -111,7 +103,7 @@ def guess_columns_with_ai(uploaded_headers):
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             response_format={"type": "json_object"},
-            max_tokens=80  # Budget protection ceiling
+            max_tokens=80
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
@@ -144,7 +136,15 @@ uploaded_file = st.file_uploader("Upload Any Vendor/Custom STTM File", type=["cs
 
 if uploaded_file:
     try:
-        df = pd.read_csv(uploaded_file)
+        # FIX: Explicitly enforce standard delimiter, quote boundaries, and double-quote configurations
+        df = pd.read_csv(
+            uploaded_file, 
+            sep=',', 
+            quotechar='"', 
+            doublequote=True, 
+            skipinitialspace=True,
+            encoding='utf-8'
+        )
         raw_headers = df.columns.tolist()
         
         st.success(f"File uploaded. Processing {len(df):,} items across {len(raw_headers)} dimensions.")

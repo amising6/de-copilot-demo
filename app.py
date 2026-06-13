@@ -1,5 +1,8 @@
+# app.py
+
 import streamlit as st
 import pandas as pd
+from openai import OpenAI
 
 st.set_page_config(
     page_title="DE Copilot",
@@ -7,19 +10,11 @@ st.set_page_config(
     layout="wide"
 )
 
-# --------------------------------------------------
-# Header
-# --------------------------------------------------
+client = OpenAI(
+    api_key=st.secrets["OPENAI_API_KEY"]
+)
 
 st.title("⚙️ DE Copilot")
-
-st.markdown(
-    "[🌐 DataEngineeringCopilot.com](https://dataengineeringcopilot.com)"
-)
-
-st.markdown(
-    "[💻 GitHub Repository](https://github.com/amising6/de-copilot-demo)"
-)
 
 st.markdown("""
 ### Enterprise STTM Factory
@@ -35,10 +30,53 @@ Upload an STTM and automatically generate:
 ✅ Technical Specifications
 
 ✅ Data Quality Rules
+
+✅ AI Analysis
 """)
 
 # --------------------------------------------------
-# Upload File
+# AI FUNCTION
+# --------------------------------------------------
+
+def generate_ai_analysis(df):
+
+    sample_data = df.to_csv(index=False)
+
+    prompt = f"""
+You are a Senior Data Architect.
+
+Analyze this STTM metadata.
+
+Provide:
+
+1. Executive Summary
+2. Business Purpose
+3. Source & Target Analysis
+4. Primary Key Recommendations
+5. Data Quality Recommendations
+6. Suggested Test Cases
+7. Risks
+8. Improvement Opportunities
+
+STTM:
+
+{sample_data}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    return response.choices[0].message.content
+
+# --------------------------------------------------
+# FILE UPLOAD
 # --------------------------------------------------
 
 uploaded_file = st.file_uploader(
@@ -46,187 +84,197 @@ uploaded_file = st.file_uploader(
     type=["csv"]
 )
 
-# --------------------------------------------------
-# Process File
-# --------------------------------------------------
-
 if uploaded_file:
 
-    try:
+    df = pd.read_csv(uploaded_file)
 
-        df = pd.read_csv(uploaded_file)
+    st.success("STTM Uploaded Successfully")
 
-        st.success("STTM Uploaded Successfully")
+    st.subheader("Uploaded STTM")
 
-        st.subheader("Uploaded STTM")
+    st.dataframe(df)
 
-        st.dataframe(df)
+    target_table = df["Target_Table"].iloc[0]
+    source_table = df["Source_Table"].iloc[0]
 
-        # ------------------------------------------
-        # Target Table
-        # ------------------------------------------
+    # --------------------------------------------------
+    # DDL GENERATION
+    # --------------------------------------------------
 
-        target_table = df["Target_Table"].iloc[0]
+    ddl_columns = []
 
-        # ------------------------------------------
-        # Generate DDL
-        # ------------------------------------------
+    for _, row in df.iterrows():
 
-        ddl = f"CREATE OR REPLACE TABLE {target_table} (\n"
+        nullable = ""
 
-        ddl_columns = []
+        if str(row["Nullable"]).upper() == "N":
+            nullable = "NOT NULL"
 
-        for _, row in df.iterrows():
+        ddl_columns.append(
+            f"{row['Target_Column']} {row['Data_Type']} {nullable}"
+        )
 
-            nullable = ""
+    ddl = f"""
+CREATE OR REPLACE TABLE {target_table}
+(
+{', '.join(ddl_columns)}
+);
+"""
 
-            if str(row["Nullable"]).upper() == "N":
-                nullable = "NOT NULL"
+    # --------------------------------------------------
+    # SQL GENERATION
+    # --------------------------------------------------
 
-            ddl_columns.append(
-                f"{row['Target_Column']} {row['Data_Type']} {nullable}"
-            )
+    sql_lines = []
 
-        ddl += ",\n".join(ddl_columns)
+    for _, row in df.iterrows():
 
-        ddl += "\n);"
+        sql_lines.append(
+            f"{row['Source_Column']} AS {row['Target_Column']}"
+        )
 
-        # ------------------------------------------
-        # Generate SQL
-        # ------------------------------------------
-
-        sql_lines = []
-
-        for _, row in df.iterrows():
-
-            sql_lines.append(
-                f"{row['Source_Column']} AS {row['Target_Column']}"
-            )
-
-        sql = f"""
+    sql = f"""
 INSERT INTO {target_table}
 
 SELECT
 
 {', '.join(sql_lines)}
 
-FROM {df['Source_Table'].iloc[0]};
+FROM {source_table};
 """
 
-        # ------------------------------------------
-        # Data Dictionary
-        # ------------------------------------------
+    # --------------------------------------------------
+    # DATA DICTIONARY
+    # --------------------------------------------------
 
-        dictionary_df = df[
-            [
-                "Target_Column",
-                "Data_Type",
-                "Business_Definition"
-            ]
+    dictionary_df = df[
+        [
+            "Target_Column",
+            "Data_Type",
+            "Business_Definition"
         ]
+    ]
 
-        # ------------------------------------------
-        # DQ Rules
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TECH SPEC
+    # --------------------------------------------------
 
-        dq_df = df[
-            [
-                "Target_Column",
-                "DQ_Rule"
-            ]
+    tech_spec_df = df.copy()
+
+    # --------------------------------------------------
+    # DQ RULES
+    # --------------------------------------------------
+
+    dq_df = df[
+        [
+            "Target_Column",
+            "DQ_Rule"
         ]
+    ]
 
-        # ------------------------------------------
-        # Tabs
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TABS
+    # --------------------------------------------------
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        [
             "Snowflake DDL",
             "Snowflake SQL",
             "Data Dictionary",
             "Technical Spec",
-            "DQ Rules"
-        ])
+            "DQ Rules",
+            "🤖 AI Analysis"
+        ]
+    )
 
-        # ------------------------------------------
-        # DDL TAB
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TAB 1
+    # --------------------------------------------------
 
-        with tab1:
+    with tab1:
 
-            st.code(ddl, language="sql")
+        st.code(ddl, language="sql")
 
-            st.download_button(
-                "📥 Download DDL",
-                ddl,
-                file_name="snowflake_ddl.sql",
-                mime="text/plain"
-            )
+        st.download_button(
+            "Download DDL",
+            ddl,
+            file_name="snowflake_ddl.sql"
+        )
 
-        # ------------------------------------------
-        # SQL TAB
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TAB 2
+    # --------------------------------------------------
 
-        with tab2:
+    with tab2:
 
-            st.code(sql, language="sql")
+        st.code(sql, language="sql")
 
-            st.download_button(
-                "📥 Download SQL",
-                sql,
-                file_name="snowflake_sql.sql",
-                mime="text/plain"
-            )
+        st.download_button(
+            "Download SQL",
+            sql,
+            file_name="snowflake_sql.sql"
+        )
 
-        # ------------------------------------------
-        # DATA DICTIONARY TAB
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TAB 3
+    # --------------------------------------------------
 
-        with tab3:
+    with tab3:
 
-            st.dataframe(dictionary_df)
+        st.dataframe(dictionary_df)
 
-            st.download_button(
-                "📥 Download Data Dictionary",
-                dictionary_df.to_csv(index=False),
-                file_name="data_dictionary.csv",
-                mime="text/csv"
-            )
+        st.download_button(
+            "Download Data Dictionary",
+            dictionary_df.to_csv(index=False),
+            file_name="data_dictionary.csv"
+        )
 
-        # ------------------------------------------
-        # TECHNICAL SPEC TAB
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TAB 4
+    # --------------------------------------------------
 
-        with tab4:
+    with tab4:
 
-            st.dataframe(df)
+        st.dataframe(tech_spec_df)
 
-            st.download_button(
-                "📥 Download Technical Spec",
-                df.to_csv(index=False),
-                file_name="technical_spec.csv",
-                mime="text/csv"
-            )
+        st.download_button(
+            "Download Technical Spec",
+            tech_spec_df.to_csv(index=False),
+            file_name="technical_spec.csv"
+        )
 
-        # ------------------------------------------
-        # DQ RULES TAB
-        # ------------------------------------------
+    # --------------------------------------------------
+    # TAB 5
+    # --------------------------------------------------
 
-        with tab5:
+    with tab5:
 
-            st.dataframe(dq_df)
+        st.dataframe(dq_df)
 
-            st.download_button(
-                "📥 Download DQ Rules",
-                dq_df.to_csv(index=False),
-                file_name="dq_rules.csv",
-                mime="text/csv"
-            )
+        st.download_button(
+            "Download DQ Rules",
+            dq_df.to_csv(index=False),
+            file_name="dq_rules.csv"
+        )
 
-    except Exception as e:
+    # --------------------------------------------------
+    # TAB 6
+    # --------------------------------------------------
 
-        st.error(f"Error processing file: {e}")
+    with tab6:
 
-else:
+        st.subheader("AI STTM Analysis")
 
-    st.info("Upload a sample STTM CSV to get started.")
+        if st.button("Generate AI Insights"):
+
+            with st.spinner("Analyzing STTM..."):
+
+                ai_response = generate_ai_analysis(df)
+
+                st.markdown(ai_response)
+
+                st.download_button(
+                    "Download AI Analysis",
+                    ai_response,
+                    file_name="ai_analysis.txt"
+                )

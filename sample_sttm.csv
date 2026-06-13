@@ -1,0 +1,5 @@
+Source_Table,Source_Column,Target_Table,Target_Column,Data_Type,Nullable,Primary_Key_Flag,Audit_Flag,Business_Definition,Transformation_Rule,DQ_Rule
+SRC_CUSTOMER,CUSTOMER_ID,DIM_CUSTOMER,CUSTOMER_ID,VARCHAR(50),N,Y,N,Unique customer identifier,Direct Mapping,NOT NULL
+SRC_CUSTOMER,FIRST_NAME,DIM_CUSTOMER,FIRST_NAME,VARCHAR(100),Y,N,N,Customer first name,Trim whitespace,
+SRC_CUSTOMER,LAST_NAME,DIM_CUSTOMER,LAST_NAME,VARCHAR(100),Y,N,N,Customer last name,Trim whitespace,
+SRC_CUSTOMER,EMAIL_ADDRESS,DIM_CUSTOMER,EMAIL_ADDRESS,VARCHAR(200),Y,N,N,Customer email,Lowercase and trim,VALID EMAIL

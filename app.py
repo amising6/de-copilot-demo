@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Dict, List, Optional, Tuple
+import graphviz
 
 import pandas as pd
 import streamlit as st
@@ -464,23 +465,84 @@ def snowflake_type(row: pd.Series) -> str:
         return "VARCHAR"
 
     return dtype
+
 def generate_er_diagram(normalized_df):
 
-    relationships = []
+    tables = {}
 
+    for target_table, group in normalized_df.groupby("target_table"):
+
+        columns = []
+
+        for _, row in group.iterrows():
+
+            col_name = safe_cell(row, "target_column")
+
+            pk = safe_cell(row, "target_pk").upper()
+            fk = safe_cell(row, "target_fk").upper()
+
+            prefix = ""
+
+            if pk in ["Y", "YES", "TRUE", "1"]:
+                prefix = "PK "
+
+            elif fk in ["Y", "YES", "TRUE", "1"]:
+                prefix = "FK "
+
+            columns.append(f"{prefix}{col_name}")
+
+        tables[target_table] = columns
+
+    output = []
+
+    for table, cols in tables.items():
+
+        output.append(f"\n[{table}]")
+
+        for col in cols:
+            output.append(f"  - {col}")
+
+    return "\n".join(output)
+
+def generate_graphviz_erd(normalized_df):
+
+    lines = [
+        "digraph ERD {",
+        "rankdir=LR;",
+        'node [shape=box];'
+    ]
+
+    tables = sorted(
+        normalized_df["target_table"]
+        .dropna()
+        .astype(str)
+        .unique()
+    )
+
+    # Create nodes
+    for table in tables:
+        if table.strip():
+            lines.append(f'"{table}";')
+
+    # Build FK relationships
     for _, row in normalized_df.iterrows():
 
-        source_table = safe_cell(row, "source_table")
-        target_table = safe_cell(row, "target_table")
+        fk_flag = safe_cell(row, "target_fk").upper()
 
-        if source_table and target_table:
-            relationships.append(
-                f"{source_table} --> {target_table}"
+        if fk_flag not in ["Y", "YES", "TRUE", "1"]:
+            continue
+
+        parent_table = safe_cell(row, "source_table")
+        child_table = safe_cell(row, "target_table")
+
+        if parent_table and child_table:
+            lines.append(
+                f'"{parent_table}" -> "{child_table}";'
             )
 
-    relationships = sorted(set(relationships))
+    lines.append("}")
 
-    return "\n".join(relationships)
+    return "\n".join(lines)
 
 
 def generate_ddl(normalized_df: pd.DataFrame) -> str:
@@ -804,6 +866,7 @@ if uploaded_file:
         # GENERATE ARTIFACTS
         # --------------------------------------------------
         er_diagram = generate_er_diagram(normalized_df)
+        graphviz_dot = generate_graphviz_erd(normalized_df)
         ddl = generate_ddl(normalized_df)
         sql = generate_sql(normalized_df)
         dictionary_df = generate_data_dictionary(normalized_df)
@@ -823,15 +886,15 @@ if uploaded_file:
 
             st.subheader("Entity Relationship Diagram")
 
-            st.code(er_diagram)
+            st.graphviz_chart(graphviz_dot)
 
             st.download_button(
                 "Download ER Diagram",
-                er_diagram,
-                file_name="er_diagram.txt",
+                graphviz_dot,
+                file_name="er_diagram.dot",
                 mime="text/plain",
             )
-        
+                
 
         with tab2:
             st.code(ddl, language="sql")

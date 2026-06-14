@@ -1102,6 +1102,11 @@ if uploaded_file:
             )
 
             zip_file.writestr(
+                 "er_diagram.dot",
+                  graphviz_dot
+            )
+
+            zip_file.writestr(
                 "data_dictionary.csv",
                 dictionary_df.to_csv(index=False)
             )

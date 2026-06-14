@@ -464,6 +464,23 @@ def snowflake_type(row: pd.Series) -> str:
         return "VARCHAR"
 
     return dtype
+def generate_er_diagram(normalized_df):
+
+    relationships = []
+
+    for _, row in normalized_df.iterrows():
+
+        source_table = safe_cell(row, "source_table")
+        target_table = safe_cell(row, "target_table")
+
+        if source_table and target_table:
+            relationships.append(
+                f"{source_table} --> {target_table}"
+            )
+
+    relationships = sorted(set(relationships))
+
+    return "\n".join(relationships)
 
 
 def generate_ddl(normalized_df: pd.DataFrame) -> str:
@@ -786,13 +803,14 @@ if uploaded_file:
         # --------------------------------------------------
         # GENERATE ARTIFACTS
         # --------------------------------------------------
+        er_diagram = generate_er_diagram(normalized_df)
         ddl = generate_ddl(normalized_df)
         sql = generate_sql(normalized_df)
         dictionary_df = generate_data_dictionary(normalized_df)
         tech_spec_df = generate_tech_spec(normalized_df)
         dq_df = generate_dq_rules(normalized_df)
-
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+            "ER Diagram",
             "Snowflake DDL",
             "Snowflake SQL",
             "Data Dictionary",
@@ -800,8 +818,22 @@ if uploaded_file:
             "DQ Rules",
             "🤖 AI Analysis",
         ])
-
+        
         with tab1:
+
+            st.subheader("Entity Relationship Diagram")
+
+            st.code(er_diagram)
+
+            st.download_button(
+                "Download ER Diagram",
+                er_diagram,
+                file_name="er_diagram.txt",
+                mime="text/plain",
+            )
+        
+
+        with tab2:
             st.code(ddl, language="sql")
             st.download_button(
                 "Download DDL",
@@ -810,7 +842,7 @@ if uploaded_file:
                 mime="text/plain",
             )
 
-        with tab2:
+        with tab3:
             st.code(sql, language="sql")
             st.download_button(
                 "Download SQL",
@@ -819,7 +851,7 @@ if uploaded_file:
                 mime="text/plain",
             )
 
-        with tab3:
+        with tab4:
             st.dataframe(dictionary_df, use_container_width=True)
             st.download_button(
                 "Download Data Dictionary",
@@ -828,7 +860,7 @@ if uploaded_file:
                 mime="text/csv",
             )
 
-        with tab4:
+        with tab5:
             st.dataframe(tech_spec_df, use_container_width=True)
             st.download_button(
                 "Download Technical Spec",
@@ -837,7 +869,7 @@ if uploaded_file:
                 mime="text/csv",
             )
 
-        with tab5:
+        with tab6:
             st.dataframe(dq_df, use_container_width=True)
             st.download_button(
                 "Download DQ Rules",
@@ -846,7 +878,7 @@ if uploaded_file:
                 mime="text/csv",
             )
 
-        with tab6:
+        with tab7:
             st.subheader("AI STTM Analysis")
             st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows.")
 

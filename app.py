@@ -57,8 +57,64 @@ Build once. Generate everywhere.
 
 """
 )
+# ==================================================
+# Sample STTM
+# ==================================================
 
+st.subheader("📂 Sample STTM Files")
 
+st.markdown("""
+Use the sample files below to explore DE Copilot capabilities before uploading your own STTM.
+
+**Available Samples**
+
+📄 Basic STTM  
+- Single table example
+- Canonical Metadata Model
+- Snowflake DDL
+- Snowflake SQL
+- DQ Rules
+
+🛒 Retail Multi-Table STTM  
+- Customer, Product, Order model
+- ER Diagram
+- Multi-table DDL
+- SQL Generation
+
+🏦 Banking Multi-Sheet STTM  
+- Customer, Account, Transaction, Branch
+- Multi-sheet ingestion
+- Canonical Metadata Model
+- ER Diagram
+- Technical Specifications
+""")
+
+from pathlib import Path
+
+sample_files = {
+    "📄 Download Basic STTM":
+        "samples/sample_sttm_basic.csv",
+
+    "🛒 Download Retail STTM":
+        "samples/sample_sttm_retail.xlsx",
+
+    "🏦 Download Banking STTM":
+        "samples/sample_sttm_banking_multisheet.xlsx"
+}
+
+for label, file_path in sample_files.items():
+
+    path = Path(file_path)
+
+    if path.exists():
+
+        with open(path, "rb") as f:
+
+            st.download_button(
+                label=label,
+                data=f,
+                file_name=path.name
+            )
 # ==================================================
 # OPENAI CLIENT
 # ==================================================

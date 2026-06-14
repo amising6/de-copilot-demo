@@ -654,9 +654,6 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
         return pd.read_excel(uploaded_file)
     raise ValueError("Unsupported file type. Upload CSV or Excel file.")
 
-# ==================================================
-# STREAMLIT UI
-# ==================================================
 
 # ==================================================
 # STREAMLIT UI
@@ -669,37 +666,48 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
 
     try:
-
         file_name = uploaded_file.name.lower()
 
+        # --------------------------------------------------
+        # READ CSV OR MULTI-SHEET EXCEL
+        # --------------------------------------------------
         if file_name.endswith(".csv"):
-
             raw_df = pd.read_csv(uploaded_file)
             df = normalize_input_columns(raw_df)
 
         else:
-
             xls = pd.ExcelFile(uploaded_file)
-
             all_dfs = []
 
             for sheet in xls.sheet_names:
-
                 temp_df = pd.read_excel(xls, sheet_name=sheet)
+                temp_df = temp_df.dropna(how="all")
+
+                if temp_df.empty:
+                    continue
+
                 temp_df = normalize_input_columns(temp_df)
 
+                # Real-world STTMs often use one sheet per target table.
+                # If target table column is not present, use sheet name as target table.
                 if "TARGET_TABLE" not in temp_df.columns:
                     temp_df["TARGET_TABLE"] = sheet
 
                 temp_df["STTM_SHEET_NAME"] = sheet
-
                 all_dfs.append(temp_df)
+
+            if not all_dfs:
+                st.error("No valid STTM sheets found in the uploaded workbook.")
+                st.stop()
 
             df = pd.concat(all_dfs, ignore_index=True)
 
-            st.success(f"Loaded {len(xls.sheet_names)} STTM sheets")
-            st.write("Sheets:", ", ".join(xls.sheet_names))
+            st.success(f"Loaded {len(all_dfs)} STTM sheets")
+            st.write("Sheets:", ", ".join([str(s) for s in xls.sheet_names]))
 
+        # --------------------------------------------------
+        # WORKBOOK SUMMARY
+        # --------------------------------------------------
         if "STTM_SHEET_NAME" in df.columns:
             st.subheader("Workbook Summary")
 
@@ -717,6 +725,9 @@ if uploaded_file:
         with st.expander("Uploaded STTM Preview", expanded=False):
             st.dataframe(df.head(200), use_container_width=True)
 
+        # --------------------------------------------------
+        # BUILD CANONICAL MODEL
+        # --------------------------------------------------
         with st.spinner("Building Canonical Metadata Model..."):
             normalized_df, final_mapping, mapping_source, required_missing, recommended_missing = build_canonical_model(df)
             errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
@@ -728,8 +739,127 @@ if uploaded_file:
         col2.metric("Canonical Rows", f"{len(normalized_df):,}")
         col3.metric("Metadata Quality Score", f"{quality_score}%")
 
+        mapping_df = pd.DataFrame([
+            {
+                "Canonical Field": field,
+                "Detected Uploaded Column": final_mapping.get(field) or ""
+            }
+            for field in CANONICAL_FIELDS
+        ])
+
+        with st.expander("Column Mapping: STTM → Canonical Model", expanded=False):
+            st.dataframe(mapping_df, use_container_width=True)
+
+        # --------------------------------------------------
+        # VALIDATION RESULTS
+        # --------------------------------------------------
+        if not errors_df.empty:
+            st.error(
+                "Critical metadata issues found. Fix these before using generated artifacts for production."
+            )
+            st.dataframe(errors_df, use_container_width=True)
+            st.stop()
+
+        if not warnings_df.empty:
+            st.warning(
+                "Metadata warnings found. Artifacts can be generated, but review warnings before production use."
+            )
+            with st.expander("View Metadata Warnings", expanded=False):
+                st.dataframe(warnings_df, use_container_width=True)
+
+        # --------------------------------------------------
+        # CANONICAL METADATA MODEL
+        # --------------------------------------------------
         st.subheader("Canonical Metadata Model")
+        st.caption(
+            "Architecture: STTM → Metadata Discovery Engine → LLM Assist if needed → Canonical Metadata Model → Artifact Generators"
+        )
         st.dataframe(normalized_df.head(500), use_container_width=True)
+
+        st.download_button(
+            "Download Canonical Metadata Model",
+            normalized_df.to_csv(index=False),
+            file_name="canonical_metadata_model.csv",
+            mime="text/csv",
+        )
+
+        # --------------------------------------------------
+        # GENERATE ARTIFACTS
+        # --------------------------------------------------
+        ddl = generate_ddl(normalized_df)
+        sql = generate_sql(normalized_df)
+        dictionary_df = generate_data_dictionary(normalized_df)
+        tech_spec_df = generate_tech_spec(normalized_df)
+        dq_df = generate_dq_rules(normalized_df)
+
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "Snowflake DDL",
+            "Snowflake SQL",
+            "Data Dictionary",
+            "Technical Spec",
+            "DQ Rules",
+            "🤖 AI Analysis",
+        ])
+
+        with tab1:
+            st.code(ddl, language="sql")
+            st.download_button(
+                "Download DDL",
+                ddl,
+                file_name="snowflake_ddl.sql",
+                mime="text/plain",
+            )
+
+        with tab2:
+            st.code(sql, language="sql")
+            st.download_button(
+                "Download SQL",
+                sql,
+                file_name="snowflake_sql.sql",
+                mime="text/plain",
+            )
+
+        with tab3:
+            st.dataframe(dictionary_df, use_container_width=True)
+            st.download_button(
+                "Download Data Dictionary",
+                dictionary_df.to_csv(index=False),
+                file_name="data_dictionary.csv",
+                mime="text/csv",
+            )
+
+        with tab4:
+            st.dataframe(tech_spec_df, use_container_width=True)
+            st.download_button(
+                "Download Technical Spec",
+                tech_spec_df.to_csv(index=False),
+                file_name="technical_spec.csv",
+                mime="text/csv",
+            )
+
+        with tab5:
+            st.dataframe(dq_df, use_container_width=True)
+            st.download_button(
+                "Download DQ Rules",
+                dq_df.to_csv(index=False),
+                file_name="dq_rules.csv",
+                mime="text/csv",
+            )
+
+        with tab6:
+            st.subheader("AI STTM Analysis")
+            st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows.")
+
+            if st.button("Generate AI Insights"):
+                with st.spinner("Analyzing canonical metadata using AI..."):
+                    ai_response = generate_ai_analysis(normalized_df)
+                    st.markdown(ai_response)
+                    st.download_button(
+                        "Download AI Analysis",
+                        ai_response,
+                        file_name="ai_analysis.txt",
+                        mime="text/plain",
+                    )
 
     except Exception as e:
         st.error("The STTM could not be processed.")

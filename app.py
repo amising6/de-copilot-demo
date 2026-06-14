@@ -26,6 +26,7 @@ st.markdown(
 
 Upload an STTM and automatically generate:
 
+✅ ER Diagram 
 ✅ Snowflake DDL  
 ✅ Snowflake SQL  
 ✅ Data Dictionary  

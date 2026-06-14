@@ -2,6 +2,8 @@ import json
 import re
 from typing import Dict, List, Optional, Tuple
 import graphviz
+import zipfile
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -1072,6 +1074,57 @@ if uploaded_file:
         dictionary_df = generate_data_dictionary(normalized_df)
         tech_spec_df = generate_tech_spec(normalized_df)
         dq_df = generate_dq_rules(normalized_df)
+# ==================================================
+# ZIP PACKAGE
+# ==================================================
+
+        zip_buffer = BytesIO()
+
+        with zipfile.ZipFile(
+            zip_buffer,
+            "w",
+            zipfile.ZIP_DEFLATED
+        ) as zip_file:
+
+            zip_file.writestr(
+                "canonical_metadata_model.csv",
+                normalized_df.to_csv(index=False)
+            )
+
+            zip_file.writestr(
+                "snowflake_ddl.sql",
+                ddl
+            )
+
+            zip_file.writestr(
+                "snowflake_sql.sql",
+                sql
+            )
+
+            zip_file.writestr(
+                "data_dictionary.csv",
+                dictionary_df.to_csv(index=False)
+            )
+
+            zip_file.writestr(
+                "technical_specification.csv",
+                tech_spec_df.to_csv(index=False)
+            )
+
+            zip_file.writestr(
+                "dq_rules.csv",
+                dq_df.to_csv(index=False)
+            )
+
+        zip_buffer.seek(0)
+
+        st.download_button(
+            "🚀 Download Project Package",
+            data=zip_buffer,
+            file_name="de_copilot_artifacts.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "ER Diagram",
             "Snowflake DDL",

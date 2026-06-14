@@ -657,17 +657,59 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
 # ==================================================
 # STREAMLIT UI
 # ==================================================
-uploaded_file = st.file_uploader("Upload STTM file", type=["csv", "xlsx", "xls"])
+
+# ==================================================
+# STREAMLIT UI
+# ==================================================
+uploaded_file = st.file_uploader(
+    "Upload STTM",
+    type=["csv", "xlsx", "xls"]
+)
 
 if uploaded_file:
+
     try:
-        raw_df = read_uploaded_file(uploaded_file)
 
-        if raw_df.empty:
-            st.error("Uploaded file is empty.")
-            st.stop()
+        file_name = uploaded_file.name.lower()
 
-        df = normalize_input_columns(raw_df)
+        if file_name.endswith(".csv"):
+
+            raw_df = pd.read_csv(uploaded_file)
+            df = normalize_input_columns(raw_df)
+
+        else:
+
+            xls = pd.ExcelFile(uploaded_file)
+
+            all_dfs = []
+
+            for sheet in xls.sheet_names:
+
+                temp_df = pd.read_excel(xls, sheet_name=sheet)
+                temp_df = normalize_input_columns(temp_df)
+
+                if "TARGET_TABLE" not in temp_df.columns:
+                    temp_df["TARGET_TABLE"] = sheet
+
+                temp_df["STTM_SHEET_NAME"] = sheet
+
+                all_dfs.append(temp_df)
+
+            df = pd.concat(all_dfs, ignore_index=True)
+
+            st.success(f"Loaded {len(xls.sheet_names)} STTM sheets")
+            st.write("Sheets:", ", ".join(xls.sheet_names))
+
+        if "STTM_SHEET_NAME" in df.columns:
+            st.subheader("Workbook Summary")
+
+            sheet_summary = (
+                df.groupby("STTM_SHEET_NAME")
+                .size()
+                .reset_index(name="Mappings")
+            )
+
+            st.dataframe(sheet_summary, use_container_width=True)
 
         st.success("STTM uploaded successfully")
         st.caption(f"Rows uploaded: {len(df):,} | Columns detected: {len(df.columns):,}")
@@ -680,96 +722,18 @@ if uploaded_file:
             errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
 
         st.subheader("Metadata Discovery Summary")
+
         col1, col2, col3 = st.columns(3)
         col1.metric("Detection Method", mapping_source)
         col2.metric("Canonical Rows", f"{len(normalized_df):,}")
         col3.metric("Metadata Quality Score", f"{quality_score}%")
 
-        mapping_df = pd.DataFrame([
-            {"Canonical Field": field, "Detected Uploaded Column": final_mapping.get(field) or ""}
-            for field in CANONICAL_FIELDS
-        ])
-
-        with st.expander("Column Mapping: STTM → Canonical Model", expanded=False):
-            st.dataframe(mapping_df, use_container_width=True)
-
-        if not errors_df.empty:
-            st.error("Critical metadata issues found. Fix these before using generated artifacts for production.")
-            st.dataframe(errors_df, use_container_width=True)
-            st.stop()
-
-        if not warnings_df.empty:
-            st.warning("Metadata warnings found. Artifacts can be generated, but review warnings before production use.")
-            with st.expander("View Metadata Warnings", expanded=False):
-                st.dataframe(warnings_df, use_container_width=True)
-
         st.subheader("Canonical Metadata Model")
-        st.caption("Architecture: STTM → Metadata Discovery Engine → LLM Assist if needed → Canonical Metadata Model → Artifact Generators")
         st.dataframe(normalized_df.head(500), use_container_width=True)
-
-        st.download_button(
-            "Download Canonical Metadata Model",
-            normalized_df.to_csv(index=False),
-            file_name="canonical_metadata_model.csv",
-            mime="text/csv",
-        )
-
-        ddl = generate_ddl(normalized_df)
-        sql = generate_sql(normalized_df)
-        dictionary_df = generate_data_dictionary(normalized_df)
-        tech_spec_df = generate_tech_spec(normalized_df)
-        dq_df = generate_dq_rules(normalized_df)
-
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "Snowflake DDL",
-            "Snowflake SQL",
-            "Data Dictionary",
-            "Technical Spec",
-            "DQ Rules",
-            "🤖 AI Analysis",
-        ])
-
-        with tab1:
-            st.code(ddl, language="sql")
-            st.download_button("Download DDL", ddl, file_name="snowflake_ddl.sql", mime="text/plain")
-
-        with tab2:
-            st.code(sql, language="sql")
-            st.download_button("Download SQL", sql, file_name="snowflake_sql.sql", mime="text/plain")
-
-        with tab3:
-            st.dataframe(dictionary_df, use_container_width=True)
-            st.download_button(
-                "Download Data Dictionary",
-                dictionary_df.to_csv(index=False),
-                file_name="data_dictionary.csv",
-                mime="text/csv",
-            )
-
-        with tab4:
-            st.dataframe(tech_spec_df, use_container_width=True)
-            st.download_button(
-                "Download Technical Spec",
-                tech_spec_df.to_csv(index=False),
-                file_name="technical_spec.csv",
-                mime="text/csv",
-            )
-
-        with tab5:
-            st.dataframe(dq_df, use_container_width=True)
-            st.download_button("Download DQ Rules", dq_df.to_csv(index=False), file_name="dq_rules.csv", mime="text/csv")
-
-        with tab6:
-            st.subheader("AI STTM Analysis")
-            st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows.")
-            if st.button("Generate AI Insights"):
-                with st.spinner("Analyzing canonical metadata using AI..."):
-                    ai_response = generate_ai_analysis(normalized_df)
-                    st.markdown(ai_response)
-                    st.download_button("Download AI Analysis", ai_response, file_name="ai_analysis.txt", mime="text/plain")
 
     except Exception as e:
         st.error("The STTM could not be processed.")
         st.exception(e)
+
 else:
     st.info("Upload a CSV or Excel STTM file to get started.")

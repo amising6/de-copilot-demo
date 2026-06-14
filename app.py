@@ -89,6 +89,12 @@ Use the sample files below to explore DE Copilot capabilities before uploading y
 - Canonical Metadata Model
 - ER Diagram
 - Technical Specifications
+
+🔗 Join Example STTM
+- Lookup tables
+- Join conditions
+- Relationship metadata
+- Future SQL generation
 """)
 
 from pathlib import Path
@@ -101,7 +107,10 @@ sample_files = {
         "samples/sample_sttm_retail.xlsx",
 
     "🏦 Download Banking STTM":
-        "samples/sample_sttm_banking_multisheet.xlsx"
+        "samples/sample_sttm_banking_multisheet.xlsx",
+
+    "🔗 Download Join Example STTM":
+        "samples/sample_sttm_join_example.xlsx"
 }
 
 for label, file_path in sample_files.items():
@@ -173,6 +182,8 @@ CANONICAL_FIELDS = [
     "approval_status",
     "release",
     "notes",
+    "lookup_column",
+    "join_type",
 ]
 
 REQUIRED_CANONICAL_FIELDS = [
@@ -778,30 +789,50 @@ def generate_ai_analysis(normalized_df: pd.DataFrame) -> str:
         return "OpenAI API key is not configured. Add OPENAI_API_KEY in Streamlit Secrets."
 
     sample_data = normalized_df.head(100).to_csv(index=False)
+
     prompt = f"""
 You are a Senior Data Architect.
 
-Analyze this canonical metadata model generated from an STTM.
+Analyze this Canonical Metadata Model generated from an enterprise STTM.
 
 Provide:
+
 1. Executive Summary
 2. Business Purpose
 3. Source & Target Analysis
-4. Primary Key Recommendations
-5. Data Quality Recommendations
-6. Suggested Test Cases
-7. Risks
-8. Improvement Opportunities
+4. Relationship & Join Analysis
+5. Primary Key Recommendations
+6. Data Quality Recommendations
+7. Suggested Test Cases
+8. Risks
+9. Improvement Opportunities
 
-Canonical Metadata Model sample:
+Relationship Analysis Instructions:
+
+- If lookup_table exists, identify lookup dependencies.
+- If lookup_join_condition exists, analyze join complexity.
+- Identify potential referential integrity issues.
+- Highlight missing foreign key relationships.
+- Recommend performance optimizations for joins.
+- Identify potential data quality risks caused by lookup failures.
+- Suggest validation checks for lookup and join logic.
+
+Canonical Metadata Model Sample:
+
 {sample_data}
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
         temperature=0.2,
     )
+
     return response.choices[0].message.content
 
 # ==================================================
@@ -1026,6 +1057,15 @@ if uploaded_file:
         with tab7:
             st.subheader("AI STTM Analysis")
             st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows.")
+            
+            join_count = normalized_df[
+                normalized_df["lookup_table"].fillna("") != ""
+            ].shape[0]
+
+            st.metric(
+                "Join Relationships Detected",
+                join_count
+            )
 
             if st.button("Generate AI Insights"):
                 with st.spinner("Analyzing canonical metadata using AI..."):

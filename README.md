@@ -9,23 +9,31 @@ https://dataengineeringcopilot.com
 
 ---
 
-## Vision
+## Why DE Copilot?
 
-Data engineering teams spend significant time manually creating technical specifications, DDL, SQL, data dictionaries, DQ rules, lineage documentation, and onboarding artifacts.
+Data engineering teams repeatedly recreate the same metadata across multiple deliverables:
 
-DE Copilot accelerates this process by converting metadata into reusable engineering assets.
+* Technical Specifications
+* Data Dictionaries
+* SQL Development
+* DDL Scripts
+* Data Quality Rules
+* ER Diagrams
+* Design Documentation
 
-Core Principle:
+The business logic rarely changes.
 
-STTM → Metadata Discovery Engine → Canonical Metadata Model → Artifact Factory
+The documentation does.
 
-Build once. Generate everywhere.
+DE Copilot transforms STTM metadata into a Canonical Metadata Model that acts as a single source of truth for engineering delivery.
+
+Build metadata once. Generate engineering artifacts everywhere.
 
 ---
 
-## Current Capabilities
+## What Works Today
 
-Upload CSV or Excel STTM files and automatically generate:
+Upload a CSV or Excel STTM and automatically generate:
 
 ✅ Canonical Metadata Model
 
@@ -43,41 +51,61 @@ Upload CSV or Excel STTM files and automatically generate:
 
 ✅ AI-Powered Metadata Analysis
 
+✅ Downloadable Project Package (ZIP)
+
 ---
 
 ## Architecture
 
-### Metadata Discovery Engine
-
-Automatically discovers and maps metadata from various STTM formats.
-
-Supports:
-
-* CSV STTM
-* Multi-sheet Excel STTM
-* Alternate column naming conventions
-* Rule-based metadata discovery
-* LLM-assisted metadata interpretation
-
-### Canonical Metadata Model
+STTM
+↓
+Metadata Discovery Engine
+↓
+Canonical Metadata Model
+↓
+Artifact Factory
 
 The Canonical Metadata Model serves as the platform's metadata abstraction layer.
 
-Once metadata is normalized, downstream artifact generation becomes technology agnostic.
+Once metadata is normalized, multiple engineering deliverables can be generated consistently from the same metadata representation.
+
+---
+
+## Current Platform Capabilities
+
+### Metadata Discovery
+
+* CSV STTM ingestion
+* Multi-sheet Excel ingestion
+* Alternate column name detection
+* Rule-based metadata discovery
+* LLM-assisted metadata interpretation
+
+### Relationship-Aware Metadata
+
+Supports metadata capture for:
+
+* Primary Keys
+* Foreign Keys
+* Lookup Tables
+* Join Conditions
+* Transformation Logic
+* Data Quality Rules
+
+These relationships can be translated into generated SQL and downstream engineering artifacts.
 
 ### Artifact Factory
 
-Generates engineering deliverables directly from the Canonical Metadata Model.
-
-Current Generators:
+Current generators include:
 
 * Snowflake DDL
 * Snowflake SQL
 * Data Dictionary
 * Technical Specifications
-* DQ Rules
-* ER Diagram
+* Data Quality Rules
+* ER Diagrams
 * AI Analysis
+* ZIP Project Package
 
 ---
 
@@ -96,12 +124,6 @@ AI Layer
 
 * OpenAI
 
-Metadata Processing
-
-* Canonical Metadata Model
-* Rule-Based Discovery Engine
-* LLM Metadata Interpreter
-
 Visualization
 
 * Graphviz
@@ -109,30 +131,6 @@ Visualization
 Deployment
 
 * Streamlit Community Cloud
-
----
-
-## Roadmap
-
-Planned Artifact Generators:
-
-🚀 dbt Models
-
-🚀 Airflow DAGs
-
-🚀 Databricks Notebooks
-
-🚀 PySpark Pipelines
-
-🚀 Power BI Semantic Models
-
-🚀 Sigma Semantic Models
-
-🚀 Monte Carlo Data Quality Rules
-
-🚀 Automated Test Case Generation
-
-🚀 Metadata Lineage & Impact Analysis
 
 ---
 
@@ -151,21 +149,49 @@ Data Dictionary
 Technical Specifications
 DQ Rules
 AI Analysis
+ZIP Package
 
 ---
 
-## Disclaimer
+## Roadmap
 
-This project uses synthetic sample metadata for demonstration purposes.
+Planned Metadata Generators:
 
-No employer, client, customer, or proprietary information is included.
+🚀 dbt Models
+
+🚀 Airflow DAGs
+
+🚀 Databricks Asset Bundles
+
+🚀 PySpark Pipelines
+
+🚀 Power BI Semantic Models
+
+🚀 Sigma Semantic Models
+
+🚀 Automated Test Case Generation
+
+🚀 Metadata Lineage & Impact Analysis
+
+🚀 Data Contract Generation
 
 ---
+
 
 ## Articles
 
 - [From STTM to Snowflake SQL: Building a Metadata-Driven Data Engineering Copilot](https://dev.to/amising6/from-sttm-to-snowflake-sql-building-a-metadata-driven-data-engineering-copilot-n4)
 - [Why I Started Building Data Engineering Copilot](https://dataengineeringcopilot.hashnode.dev/why-i-started-building-data-engineering-copilot)
+
+---
+
+## Disclaimer
+
+This project uses synthetic metadata and demonstration datasets only.
+
+No employer, client, customer, or proprietary information is included.
+
+---
 
 ## Author
 

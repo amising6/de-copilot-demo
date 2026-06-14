@@ -57,8 +57,6 @@ A technology-agnostic metadata platform that transforms STTM metadata into reusa
 
 Build once. Generate everywhere.
 
-A Canonical Metadata Model enables consistent generation of engineering artifacts from a single source of truth.
-
 """
 )
 # ==================================================

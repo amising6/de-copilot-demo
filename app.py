@@ -19,22 +19,45 @@ st.set_page_config(
 st.title("⚙️ DE Copilot")
 
 st.markdown(
-    """
-### Enterprise STTM Factory
+"""
 
-**Architecture:** STTM → AI Metadata Interpreter → Canonical Metadata Model → Artifact Generators
+### Enterprise Metadata Intelligence Platform
 
-Upload an STTM and automatically generate:
+**Architecture**
 
-✅ ER Diagram 
-✅ Snowflake DDL  
-✅ Snowflake SQL  
-✅ Data Dictionary  
-✅ Technical Specifications  
-✅ Data Quality Rules  
-✅ AI Analysis  
+STTM → Metadata Discovery Engine → Canonical Metadata Model → Artifact Factory
+
+Transform complex source-to-target mappings into production-ready data engineering assets in minutes.
+
+Upload a CSV or Excel STTM and automatically generate:
+
+✅ Canonical Metadata Model
+
+✅ Entity Relationship Diagram (ERD)
+
+✅ Snowflake DDL
+
+✅ Snowflake SQL
+
+✅ Data Dictionary
+
+✅ Technical Specifications
+
+✅ Data Quality Rules
+
+✅ AI-Powered Metadata Analysis
+
+---
+
+### Why DE Copilot?
+
+A technology-agnostic metadata platform that transforms STTM metadata into reusable engineering artifacts through a Canonical Metadata Model.
+
+Build once. Generate everywhere.
+
 """
 )
+
 
 # ==================================================
 # OPENAI CLIENT

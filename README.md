@@ -165,6 +165,7 @@ No employer, client, customer, or proprietary information is included.
 ## Articles
 
 - [From STTM to Snowflake SQL: Building a Metadata-Driven Data Engineering Copilot](https://dev.to/amising6/from-sttm-to-snowflake-sql-building-a-metadata-driven-data-engineering-copilot-n4)
+- [Why I Started Building Data Engineering Copilot](https://dataengineeringcopilot.hashnode.dev/why-i-started-building-data-engineering-copilot)
 
 ## Author
 

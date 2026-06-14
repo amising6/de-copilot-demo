@@ -593,7 +593,130 @@ Normalized STTM sample:
 # --------------------------------------------------
 # FILE UPLOAD
 # --------------------------------------------------
+def build_canonical_model_with_llm(df: pd.DataFrame) -> pd.DataFrame:
+    if client is None:
+        st.warning("OpenAI API key not configured. Falling back to rule-based canonical model.")
 
+        rule_mapping = rule_based_column_mapping(df)
+        return build_normalized_sttm(df, rule_mapping)
+
+    metadata_sample = {
+    "columns": list(df.columns),
+    "row_count": len(df),
+    "sample_rows": df.head(10).to_dict(orient="records")
+}
+
+    prompt = f"""
+You are an Enterprise Metadata Normalization Engine.
+
+Analyze the uploaded STTM structure.
+
+Determine:
+
+1. Which uploaded columns map to Canonical Metadata fields.
+2. Source-to-target relationship patterns.
+3. Business rule columns.
+4. Transformation logic columns.
+5. DQ rule columns.
+
+Return canonical mappings only.
+Canonical fields:
+{CANONICAL_FIELDS}
+
+Input STTM metadata:
+{json.dumps(metadata_sample, indent=2)}
+Rules:
+1. Return ONLY valid JSON.
+2. Return a JSON array of records.
+3. Each record must represent one source-to-target mapping.
+4. Every record must contain all canonical fields.
+5. If a value is missing, use an empty string.
+6. Do not explain anything.
+
+Return format:
+[
+  {{
+    "source_system": "",
+    "source_database": "",
+    "source_schema": "",
+    "source_table": "",
+    "source_column": "",
+    "source_datatype": "",
+    "source_nullable": "",
+    "source_pk": "",
+    "source_fk": "",
+    "target_system": "",
+    "target_database": "",
+    "target_schema": "",
+    "target_table": "",
+    "target_column": "",
+    "target_datatype": "",
+    "target_length": "",
+    "target_precision": "",
+    "target_scale": "",
+    "target_nullable": "",
+    "target_pk": "",
+    "target_fk": "",
+    "business_definition": "",
+    "transformation_type": "",
+    "transformation_logic": "",
+    "lookup_table": "",
+    "lookup_join_condition": "",
+    "filter_condition": "",
+    "dq_rule": "",
+    "dq_severity": "",
+    "dq_action": "",
+    "scd_type": "",
+    "effective_date_column": "",
+    "end_date_column": "",
+    "current_flag_column": "",
+    "pii_flag": "",
+    "data_masking_rule": "",
+    "owner": "",
+    "approval_status": "",
+    "release": "",
+    "notes": ""
+  }}
+]
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "You convert messy enterprise STTM metadata into a clean canonical metadata model."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0,
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    if content.startswith("```json"):
+        content = content.replace("```json", "").replace("```", "").strip()
+    elif content.startswith("```"):
+        content = content.replace("```", "").strip()
+
+    records = json.loads(content)
+
+    canonical_df = pd.DataFrame(records)
+
+    for field in CANONICAL_FIELDS:
+        if field not in canonical_df.columns:
+            canonical_df[field] = ""
+
+    canonical_df = canonical_df[CANONICAL_FIELDS]
+
+    canonical_df = canonical_df[
+        canonical_df["target_column"].astype(str).str.strip() != ""
+    ]
+
+    return canonical_df
 uploaded_file = st.file_uploader("Upload STTM CSV", type=["csv"])
 
 if uploaded_file:
@@ -607,46 +730,21 @@ if uploaded_file:
         with st.expander("Uploaded STTM Preview", expanded=False):
             st.dataframe(df.head(200), use_container_width=True)
 
-        rule_mapping = rule_based_column_mapping(df)
-        confidence = mapping_confidence(rule_mapping)
+        with st.spinner("AI Metadata Interpreter is building Canonical Metadata Model..."):
+          normalized_df = build_canonical_model_with_llm(df)
 
-        final_mapping = rule_mapping.copy()
-        mapping_source = "Rule-Based Detection"
-
-        if confidence < 0.8:
-            llm_mapping = llm_column_mapping(df)
-            if llm_mapping:
-                for field in CANONICAL_FIELDS:
-                    if not final_mapping.get(field) and llm_mapping.get(field):
-                        final_mapping[field] = llm_mapping[field]
-                mapping_source = "Rule-Based + LLM Assisted Detection"
-
-        normalized_df = build_normalized_sttm(df, final_mapping)
-
+        mapping_source = "STTM → LLM → Canonical Metadata Model"
         st.subheader("Detected STTM Structure")
         st.caption(f"Detection Method: {mapping_source}")
-
-        detection_df = pd.DataFrame(
-            [
-                {
-                    "Canonical Field": field,
-                    "Detected Uploaded Column": final_mapping.get(field),
-                }
-                for field in CANONICAL_FIELDS
-            ]
-        )
-
-        st.dataframe(detection_df, use_container_width=True)
-
+        st.subheader("Canonical Metadata Model")
+        st.caption("Architecture: STTM → LLM Metadata Interpreter → Canonical Metadata Model → Artifact Generators")
+        st.dataframe(normalized_df.head(200), use_container_width=True)
         required_fields = ["target_table", "target_column", "target_datatype"]
-        missing = [field for field in required_fields if not final_mapping.get(field)]
-
-        if missing:
-            st.error(
-                "Required STTM fields could not be detected: "
-                + ", ".join(missing)
-            )
-            st.stop()
+        if normalized_df.empty:
+           st.error(
+        "AI Metadata Interpreter could not build a Canonical Metadata Model."
+    )
+           st.stop()
 
         st.subheader("Normalized STTM Model")
         st.dataframe(normalized_df.head(200), use_container_width=True)

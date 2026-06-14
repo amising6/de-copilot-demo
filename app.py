@@ -679,43 +679,130 @@ def generate_sql(normalized_df: pd.DataFrame) -> str:
     sql_blocks = []
 
     for target_table, group in normalized_df.groupby("target_table", dropna=False):
+
         target_table = quote_identifier(target_table) or "TARGET_TABLE"
-        source_table_values = group["source_table"].dropna().astype(str).str.strip()
+
+        source_table_values = (
+            group["source_table"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
         source_table_values = source_table_values[source_table_values != ""]
-        source_table_name = quote_identifier(source_table_values.iloc[0]) if not source_table_values.empty else "SOURCE_TABLE"
+
+        source_table_name = (
+            quote_identifier(source_table_values.iloc[0])
+            if not source_table_values.empty
+            else "SOURCE_TABLE"
+        )
 
         select_lines = []
         seen_targets = set()
 
         for _, row in group.iterrows():
-            source_col = quote_identifier(safe_cell(row, "source_column"))
-            target_col = quote_identifier(safe_cell(row, "target_column"))
-            logic = safe_cell(row, "transformation_logic")
+
+            source_col = quote_identifier(
+                safe_cell(row, "source_column")
+            )
+
+            target_col = quote_identifier(
+                safe_cell(row, "target_column")
+            )
+
+            logic = safe_cell(
+                row,
+                "transformation_logic"
+            )
 
             if not target_col or target_col in seen_targets:
                 continue
+
             seen_targets.add(target_col)
 
-            if logic and logic.upper() not in ["DIRECT", "DIRECT MAPPING", "N/A", "NA", "NONE", "NULL"]:
+            if logic and logic.upper() not in [
+                "DIRECT",
+                "DIRECT MAPPING",
+                "N/A",
+                "NA",
+                "NONE",
+                "NULL"
+            ]:
                 select_expr = logic
+
             elif source_col:
                 select_expr = source_col
-            else:
-                select_expr = f"NULL /* missing source for {target_col} */"
 
-            select_lines.append(f"    {select_expr} AS {target_col}")
+            else:
+                select_expr = (
+                    f"NULL /* missing source for {target_col} */"
+                )
+
+            select_lines.append(
+                f"    {select_expr} AS {target_col}"
+            )
 
         if not select_lines:
             continue
 
+        # ---------------------------
+        # JOIN SUPPORT
+        # ---------------------------
+
+        lookup_tables = (
+            group["lookup_table"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        lookup_tables = lookup_tables[
+            lookup_tables != ""
+        ]
+
+        join_conditions = (
+            group["lookup_join_condition"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        join_conditions = join_conditions[
+            join_conditions != ""
+        ]
+
+        from_clause = f"FROM {source_table_name}"
+
+        if (
+            not lookup_tables.empty
+            and not join_conditions.empty
+        ):
+
+            lookup_table = quote_identifier(
+                lookup_tables.iloc[0]
+            )
+
+            join_condition = (
+                join_conditions.iloc[0]
+            )
+
+            from_clause += f"""
+LEFT JOIN {lookup_table}
+    ON {join_condition}
+"""
+
         sql = f"""INSERT INTO {target_table}
 SELECT
 {",\n".join(select_lines)}
-FROM {source_table_name};"""
+{from_clause};"""
+
         sql_blocks.append(sql)
 
-    return "\n\n".join(sql_blocks) if sql_blocks else "-- No valid SQL could be generated."
-
+    return (
+        "\n\n".join(sql_blocks)
+        if sql_blocks
+        else "-- No valid SQL could be generated."
+    )
 
 def generate_data_dictionary(normalized_df: pd.DataFrame) -> pd.DataFrame:
     dictionary_df = normalized_df[

@@ -1093,37 +1093,6 @@ if uploaded_file:
 
         add_audit_event("Artifacts Generated", "ERD, DDL, SQL, Data Dictionary, Technical Spec, DQ Rules, AI Recommendations")
 
-        # --------------------------------------------------
-        # PROJECT PACKAGE ZIP
-        # --------------------------------------------------
-        workflow_status_for_zip = st.session_state.get(
-        "workflow_status",
-        "Draft"
-    )
-        deployment_manifest = generate_deployment_manifest(uploaded_file.name, workflow_status_for_zip, observability_metrics)
-        audit_df_for_zip = pd.DataFrame(st.session_state.audit_events)
-
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            zip_file.writestr("canonical_metadata_model.csv", normalized_df.to_csv(index=False))
-            zip_file.writestr("snowflake_ddl.sql", ddl)
-            zip_file.writestr("snowflake_sql.sql", sql)
-            zip_file.writestr("er_diagram.dot", graphviz_dot)
-            zip_file.writestr("data_dictionary.csv", dictionary_df.to_csv(index=False))
-            zip_file.writestr("technical_specification.csv", tech_spec_df.to_csv(index=False))
-            zip_file.writestr("dq_rules.csv", dq_df.to_csv(index=False))
-            zip_file.writestr("ai_recommendations.csv", ai_recommendation_df.to_csv(index=False))
-            zip_file.writestr("deployment_manifest.json", deployment_manifest)
-            zip_file.writestr("audit_log.csv", audit_df_for_zip.to_csv(index=False))
-        zip_buffer.seek(0)
-
-        st.download_button(
-            "🚀 Download Project Package",
-            data=zip_buffer,
-            file_name="de_copilot_artifacts.zip",
-            mime="application/zip",
-            use_container_width=True,
-        )
 
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
             [
@@ -1252,6 +1221,99 @@ if uploaded_file:
             if st.button("Record Workflow Status"):
                 add_audit_event("Workflow Status Updated", f"Status changed to {st.session_state.workflow_status}")
                 st.success("Workflow status recorded in audit trail.")
+            st.markdown("---")
+            st.subheader("Approved Release Package")
+
+            if st.session_state.workflow_status != "Approved":
+
+                st.warning(
+                    "Project package is locked. "
+                    "Complete Human Review and Approval before download."
+                )
+
+            else:
+
+                deployment_manifest = generate_deployment_manifest(
+                    uploaded_file.name,
+                    st.session_state.workflow_status,
+                    observability_metrics
+                )
+
+                audit_df_for_zip = pd.DataFrame(
+                    st.session_state.audit_events
+                )
+
+                zip_buffer = BytesIO()
+
+                with zipfile.ZipFile(
+                    zip_buffer,
+                    "w",
+                    zipfile.ZIP_DEFLATED
+                ) as zip_file:
+
+                    zip_file.writestr(
+                        "canonical_metadata_model.csv",
+                        normalized_df.to_csv(index=False)
+                    )
+
+                    zip_file.writestr(
+                        "snowflake_ddl.sql",
+                        ddl
+                    )
+
+                    zip_file.writestr(
+                        "snowflake_sql.sql",
+                        sql
+                    )
+
+                    zip_file.writestr(
+                        "er_diagram.dot",
+                        graphviz_dot
+                    )
+
+                    zip_file.writestr(
+                        "data_dictionary.csv",
+                        dictionary_df.to_csv(index=False)
+                    )
+
+                    zip_file.writestr(
+                        "technical_specification.csv",
+                        tech_spec_df.to_csv(index=False)
+                    )
+
+                    zip_file.writestr(
+                        "dq_rules.csv",
+                        dq_df.to_csv(index=False)
+                    )
+
+                    zip_file.writestr(
+                        "ai_recommendations.csv",
+                        ai_recommendation_df.to_csv(index=False)
+                    )
+
+                    zip_file.writestr(
+                        "deployment_manifest.json",
+                        deployment_manifest
+                    )
+
+                    zip_file.writestr(
+                        "audit_log.csv",
+                        audit_df_for_zip.to_csv(index=False)
+                    )
+
+                zip_buffer.seek(0)
+
+                st.success(
+                    "Approval completed. Release package unlocked."
+                )
+
+                st.download_button(
+                    "🚀 Download Approved Release Package",
+                    data=zip_buffer,
+                    file_name="de_copilot_approved_release.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
 
             updated_manifest = generate_deployment_manifest(uploaded_file.name, st.session_state.workflow_status, observability_metrics)
             st.code(updated_manifest, language="json")

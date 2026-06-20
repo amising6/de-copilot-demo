@@ -1072,6 +1072,42 @@ if uploaded_file:
         dictionary_df = generate_data_dictionary(normalized_df)
         tech_spec_df = generate_tech_spec(normalized_df)
         dq_df = generate_dq_rules(normalized_df)
+def generate_ai_recommendations(normalized_df):
+
+    recommendations = []
+
+    for _, row in normalized_df.iterrows():
+
+        column = row["target_column"]
+
+        if str(row["target_pk"]).upper() in ["Y","YES","TRUE","1"]:
+
+            recommendations.append({
+                "Artifact": column,
+                "Recommendation": "Validate uniqueness constraint",
+                "Severity": "HIGH",
+                "Status": "Pending Review"
+            })
+
+        if str(row["pii_flag"]).upper() in ["Y","YES","TRUE","1"]:
+
+            recommendations.append({
+                "Artifact": column,
+                "Recommendation": "Apply masking policy",
+                "Severity": "HIGH",
+                "Status": "Pending Review"
+            })
+
+        if str(row["target_nullable"]).upper() in ["N","NO","FALSE","0"]:
+
+            recommendations.append({
+                "Artifact": column,
+                "Recommendation": "Add NOT NULL validation",
+                "Severity": "MEDIUM",
+                "Status": "Pending Review"
+            })
+
+    return pd.DataFrame(recommendations)
 # ==================================================
 # ZIP PACKAGE
 # ==================================================
@@ -1128,14 +1164,15 @@ if uploaded_file:
             mime="application/zip",
             use_container_width=True
         )
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "ER Diagram",
             "Snowflake DDL",
             "Snowflake SQL",
             "Data Dictionary",
             "Technical Spec",
             "DQ Rules",
-            "🤖 AI Analysis",
+            "AI Analysis",
+            "Human Review"
         ])
         
         with tab1:

@@ -15,11 +15,21 @@ from openai import OpenAI
 # ==================================================
 st.set_page_config(
     page_title="DE Copilot",
-    page_icon="⚙️",
+    page_icon="⚡",
     layout="wide",
+    initial_sidebar_state="collapsed"
 )
+hide_streamlit_style = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 st.title("⚙️ DE Copilot")
+
 
 st.markdown(
     """

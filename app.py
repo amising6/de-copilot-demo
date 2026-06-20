@@ -1,9 +1,10 @@
 import json
 import re
-from typing import Dict, List, Optional, Tuple
-import graphviz
 import zipfile
+from datetime import datetime
 from io import BytesIO
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -21,33 +22,32 @@ st.set_page_config(
 st.title("⚙️ DE Copilot")
 
 st.markdown(
-"""
+    """
 
 ### Enterprise Metadata Intelligence Platform
 
 **Architecture**
 
-STTM → Metadata Discovery Engine → Canonical Metadata Model → Artifact Factory
+STTM → Metadata Discovery Engine → Canonical Metadata Model → AI Intelligence Layer → Artifact Factory → Human Review → Approval → Deployment → Observability & Audit
 
-Transform complex source-to-target mappings into production-ready data engineering assets in minutes.
+Transform complex source-to-target mappings into governed, production-ready data engineering assets in minutes.
 
 Upload a CSV or Excel STTM and automatically generate:
 
-✅ Canonical Metadata Model
-
-✅ Entity Relationship Diagram (ERD)
-
-✅ Snowflake DDL
-
-✅ Snowflake SQL
-
-✅ Data Dictionary
-
-✅ Technical Specifications
-
-✅ Data Quality Rules
-
-✅ AI-Powered Metadata Analysis
+✅ Canonical Metadata Model  
+✅ Entity Relationship Diagram (ERD)  
+✅ Snowflake DDL  
+✅ Snowflake SQL  
+✅ Data Dictionary  
+✅ Technical Specifications  
+✅ Data Quality Rules  
+✅ AI-Powered Metadata Analysis  
+✅ AI Intelligence Recommendations  
+✅ Human Review Queue  
+✅ Approval Workflow  
+✅ Deployment Manifest  
+✅ Observability Dashboard  
+✅ Audit Trail  
 
 ---
 
@@ -55,17 +55,55 @@ Upload a CSV or Excel STTM and automatically generate:
 
 A technology-agnostic metadata platform that transforms STTM metadata into reusable engineering artifacts through a Canonical Metadata Model.
 
-Build once. Generate everywhere.
+**Build once. Generate everywhere. Govern before deployment.**
 
 """
 )
-# ==================================================
-# Sample STTM
-# ==================================================
 
+# ==================================================
+# OPENAI CLIENT
+# ==================================================
+def get_openai_client():
+    try:
+        return OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    except Exception:
+        return None
+
+
+client = get_openai_client()
+
+# ==================================================
+# SESSION STATE
+# ==================================================
+def init_session_state():
+    if "audit_events" not in st.session_state:
+        st.session_state.audit_events = []
+    if "review_decisions" not in st.session_state:
+        st.session_state.review_decisions = {}
+    if "workflow_status" not in st.session_state:
+        st.session_state.workflow_status = "Draft"
+
+
+def add_audit_event(action: str, detail: str = "", actor: str = "DE Copilot"):
+    st.session_state.audit_events.append(
+        {
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Actor": actor,
+            "Action": action,
+            "Detail": detail,
+        }
+    )
+
+
+init_session_state()
+
+# ==================================================
+# SAMPLE STTM FILES
+# ==================================================
 st.subheader("📂 Sample STTM Files")
 
-st.markdown("""
+st.markdown(
+    """
 Use the sample files below to explore DE Copilot capabilities before uploading your own STTM.
 
 **Available Samples**
@@ -94,49 +132,23 @@ Use the sample files below to explore DE Copilot capabilities before uploading y
 - Lookup tables
 - Join conditions
 - Relationship metadata
-- Future SQL generation
-""")
-
-from pathlib import Path
+- SQL generation
+"""
+)
 
 sample_files = {
-    "📄 Download Basic STTM":
-        "samples/sample_sttm_basic.csv",
-
-    "🛒 Download Retail STTM":
-        "samples/sample_sttm_retail.xlsx",
-
-    "🏦 Download Banking STTM":
-        "samples/sample_sttm_banking_multisheet.xlsx",
-
-    "🔗 Download Join Example STTM":
-        "samples/sample_sttm_join_example.xlsx"
+    "📄 Download Basic STTM": "samples/sample_sttm_basic.csv",
+    "🛒 Download Retail STTM": "samples/sample_sttm_retail.xlsx",
+    "🏦 Download Banking STTM": "samples/sample_sttm_banking_multisheet.xlsx",
+    "🔗 Download Join Example STTM": "samples/sample_sttm_join_example.xlsx",
 }
 
-for label, file_path in sample_files.items():
-
+sample_cols = st.columns(4)
+for index, (label, file_path) in enumerate(sample_files.items()):
     path = Path(file_path)
-
     if path.exists():
-
         with open(path, "rb") as f:
-
-            st.download_button(
-                label=label,
-                data=f,
-                file_name=path.name
-            )
-# ==================================================
-# OPENAI CLIENT
-# ==================================================
-def get_openai_client():
-    try:
-        return OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    except Exception:
-        return None
-
-
-client = get_openai_client()
+            sample_cols[index % 4].download_button(label=label, data=f, file_name=path.name)
 
 # ==================================================
 # CANONICAL MODEL
@@ -186,16 +198,8 @@ CANONICAL_FIELDS = [
     "join_type",
 ]
 
-REQUIRED_CANONICAL_FIELDS = [
-    "target_table",
-    "target_column",
-]
-
-RECOMMENDED_CANONICAL_FIELDS = [
-    "source_table",
-    "source_column",
-    "target_datatype",
-]
+REQUIRED_CANONICAL_FIELDS = ["target_table", "target_column"]
+RECOMMENDED_CANONICAL_FIELDS = ["source_table", "source_column", "target_datatype"]
 
 COLUMN_ALIASES: Dict[str, List[str]] = {
     "source_system": ["SOURCE_SYSTEM", "SOURCE_SYSTEM_NAME", "SRC_SYSTEM", "ORIGIN_SYSTEM"],
@@ -211,9 +215,7 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
         "SRC_COLUMN", "SRC_COLUMN_NAME", "SOURCE_FIELD", "SRC_FIELD", "SOURCE_ATTRIBUTE",
         "SRC_ATTRIBUTE", "ORIGIN_ATTRIBUTE", "ORIGIN_FIELD", "FROM_COLUMN", "INPUT_COLUMN",
     ],
-    "source_datatype": [
-        "SOURCE_DATA_TYPE", "SOURCE_DATATYPE", "SRC_DATA_TYPE", "SRC_DATATYPE", "SOURCE_TYPE",
-    ],
+    "source_datatype": ["SOURCE_DATA_TYPE", "SOURCE_DATATYPE", "SRC_DATA_TYPE", "SRC_DATATYPE", "SOURCE_TYPE"],
     "source_nullable": ["SOURCE_NULLABLE", "SOURCE_IS_NULLABLE", "SRC_NULLABLE", "SRC_IS_NULLABLE"],
     "source_pk": ["SOURCE_PK", "SOURCE_IS_PK", "SRC_PK", "SRC_PRIMARY_KEY"],
     "source_fk": ["SOURCE_FK", "SOURCE_IS_FK", "SRC_FK", "SRC_FOREIGN_KEY"],
@@ -265,6 +267,8 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     "approval_status": ["APPROVAL_STATUS", "STTM_STATUS", "QA_STATUS", "STATUS"],
     "release": ["RELEASE", "PHASE_RELEASE", "SPRINT_ID", "VERSION"],
     "notes": ["NOTES", "NOTES_COMMENTS", "COMMENTS", "COMMENT", "REMARKS"],
+    "lookup_column": ["LOOKUP_COLUMN", "LOOKUP_KEY", "REFERENCE_COLUMN", "REF_COLUMN"],
+    "join_type": ["JOIN_TYPE", "LOOKUP_JOIN_TYPE"],
 }
 
 # ==================================================
@@ -336,14 +340,9 @@ def extract_json_object(text: str) -> Dict:
         return json.loads(match.group(0))
 
 # ==================================================
-# LLM COLUMN INTERPRETER - PRODUCTION SAFE
+# LLM COLUMN INTERPRETER
 # ==================================================
 def llm_assisted_column_mapping(df: pd.DataFrame, base_mapping: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
-    """
-    LLM only maps uploaded column names to canonical field names.
-    It does NOT generate row-level canonical records.
-    Python remains responsible for building every canonical row.
-    """
     if client is None:
         return base_mapping
 
@@ -372,20 +371,9 @@ Canonical fields:
 Uploaded STTM metadata:
 {json.dumps(metadata_sample, indent=2)}
 
-Return ONLY valid JSON object in this exact shape:
-{{
-  "source_table": "UPLOADED_COLUMN_NAME_OR_NULL",
-  "source_column": "UPLOADED_COLUMN_NAME_OR_NULL",
-  "target_table": "UPLOADED_COLUMN_NAME_OR_NULL",
-  "target_column": "UPLOADED_COLUMN_NAME_OR_NULL",
-  "target_datatype": "UPLOADED_COLUMN_NAME_OR_NULL"
-}}
-
-Rules:
-1. Keys must be canonical field names.
-2. Values must be uploaded column names from uploaded_columns or null.
-3. Include all canonical fields, even if value is null.
-4. Return JSON only.
+Return ONLY valid JSON object.
+Keys must be canonical field names.
+Values must be uploaded column names from uploaded_columns or null.
 """
 
     try:
@@ -439,7 +427,6 @@ def build_canonical_model(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Opt
 
 def build_normalized_sttm(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> pd.DataFrame:
     rows = []
-
     for _, row in df.iterrows():
         normalized_row = {}
         for field in CANONICAL_FIELDS:
@@ -448,7 +435,6 @@ def build_normalized_sttm(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -
         rows.append(normalized_row)
 
     normalized_df = pd.DataFrame(rows)
-
     for field in CANONICAL_FIELDS:
         if field not in normalized_df.columns:
             normalized_df[field] = ""
@@ -456,7 +442,6 @@ def build_normalized_sttm(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -
     normalized_df = normalized_df[CANONICAL_FIELDS]
     normalized_df = normalized_df[normalized_df["target_column"].astype(str).str.strip() != ""]
     normalized_df = normalized_df.drop_duplicates().reset_index(drop=True)
-
     return normalized_df
 
 # ==================================================
@@ -511,11 +496,10 @@ def validate_canonical_model(normalized_df: pd.DataFrame) -> Tuple[pd.DataFrame,
     total_checks = len(REQUIRED_CANONICAL_FIELDS) + len(RECOMMENDED_CANONICAL_FIELDS) + 2
     failed_checks = len(errors) + len(warnings)
     quality_score = max(0, int(((total_checks - failed_checks) / total_checks) * 100))
-
     return pd.DataFrame(errors), pd.DataFrame(warnings), quality_score
 
 # ==================================================
-# GENERATORS
+# ARTIFACT GENERATORS
 # ==================================================
 def quote_identifier(identifier: str) -> str:
     identifier = clean_value(identifier)
@@ -532,109 +516,65 @@ def snowflake_type(row: pd.Series) -> str:
 
     if dtype in ["VARCHAR2", "STRING", "TEXT", "CHAR", "CHARACTER"]:
         dtype = "VARCHAR"
-
     if dtype == "VARCHAR":
         if length and length.upper() not in ["0", "N/A", "NA", "NONE", "NULL"]:
             return f"VARCHAR({length})"
         return "VARCHAR"
-
     if dtype in ["NUMBER", "NUMERIC", "DECIMAL"]:
         if precision and scale and precision.upper() not in ["0", "N/A", "NA", "NONE", "NULL"]:
             return f"NUMBER({precision},{scale})"
         if precision and precision.upper() not in ["0", "N/A", "NA", "NONE", "NULL"]:
             return f"NUMBER({precision})"
         return "NUMBER"
-
-    if dtype in ["DATE"]:
+    if dtype == "DATE":
         return "DATE"
-
     if dtype in ["TIMESTAMP", "DATETIME", "TIMESTAMP_NTZ"]:
         return "TIMESTAMP_NTZ"
-
     if dtype in ["BOOLEAN", "BOOL"]:
         return "BOOLEAN"
-
     if not dtype:
         return "VARCHAR"
-
     return dtype
 
-def generate_er_diagram(normalized_df):
 
+def generate_er_diagram(normalized_df: pd.DataFrame) -> str:
     tables = {}
-
     for target_table, group in normalized_df.groupby("target_table"):
-
         columns = []
-
         for _, row in group.iterrows():
-
             col_name = safe_cell(row, "target_column")
-
             pk = safe_cell(row, "target_pk").upper()
             fk = safe_cell(row, "target_fk").upper()
-
-            prefix = ""
-
-            if pk in ["Y", "YES", "TRUE", "1"]:
-                prefix = "PK "
-
-            elif fk in ["Y", "YES", "TRUE", "1"]:
-                prefix = "FK "
-
+            prefix = "PK " if pk in ["Y", "YES", "TRUE", "1"] else "FK " if fk in ["Y", "YES", "TRUE", "1"] else ""
             columns.append(f"{prefix}{col_name}")
-
         tables[target_table] = columns
 
     output = []
-
     for table, cols in tables.items():
-
         output.append(f"\n[{table}]")
-
         for col in cols:
             output.append(f"  - {col}")
-
     return "\n".join(output)
 
-def generate_graphviz_erd(normalized_df):
 
-    lines = [
-        "digraph ERD {",
-        "rankdir=LR;",
-        'node [shape=box];'
-    ]
+def generate_graphviz_erd(normalized_df: pd.DataFrame) -> str:
+    lines = ["digraph ERD {", "rankdir=LR;", "node [shape=box];"]
 
-    tables = sorted(
-        normalized_df["target_table"]
-        .dropna()
-        .astype(str)
-        .unique()
-    )
-
-    # Create nodes
+    tables = sorted(normalized_df["target_table"].dropna().astype(str).unique())
     for table in tables:
         if table.strip():
             lines.append(f'"{table}";')
 
-    # Build FK relationships
     for _, row in normalized_df.iterrows():
-
         fk_flag = safe_cell(row, "target_fk").upper()
-
         if fk_flag not in ["Y", "YES", "TRUE", "1"]:
             continue
-
         parent_table = safe_cell(row, "source_table")
         child_table = safe_cell(row, "target_table")
-
         if parent_table and child_table:
-            lines.append(
-                f'"{parent_table}" -> "{child_table}";'
-            )
+            lines.append(f'"{parent_table}" -> "{child_table}";')
 
     lines.append("}")
-
     return "\n".join(lines)
 
 
@@ -643,7 +583,6 @@ def generate_ddl(normalized_df: pd.DataFrame) -> str:
         return "-- No valid target columns found."
 
     ddl_blocks = []
-
     for target_table, group in normalized_df.groupby("target_table", dropna=False):
         target_table = quote_identifier(target_table) or "TARGET_TABLE"
         column_lines = []
@@ -654,7 +593,6 @@ def generate_ddl(normalized_df: pd.DataFrame) -> str:
             if not col_name or col_name in seen_columns:
                 continue
             seen_columns.add(col_name)
-
             data_type = snowflake_type(row)
             nullable = safe_cell(row, "target_nullable").upper()
             not_null = " NOT NULL" if nullable in ["N", "NO", "FALSE", "0"] else ""
@@ -677,115 +615,45 @@ def generate_sql(normalized_df: pd.DataFrame) -> str:
         return "-- No valid mappings found."
 
     sql_blocks = []
-
     for target_table, group in normalized_df.groupby("target_table", dropna=False):
-
         target_table = quote_identifier(target_table) or "TARGET_TABLE"
-
-        source_table_values = (
-            group["source_table"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-        )
-
+        source_table_values = group["source_table"].dropna().astype(str).str.strip()
         source_table_values = source_table_values[source_table_values != ""]
-
-        source_table_name = (
-            quote_identifier(source_table_values.iloc[0])
-            if not source_table_values.empty
-            else "SOURCE_TABLE"
-        )
+        source_table_name = quote_identifier(source_table_values.iloc[0]) if not source_table_values.empty else "SOURCE_TABLE"
 
         select_lines = []
         seen_targets = set()
 
         for _, row in group.iterrows():
-
-            source_col = quote_identifier(
-                safe_cell(row, "source_column")
-            )
-
-            target_col = quote_identifier(
-                safe_cell(row, "target_column")
-            )
-
-            logic = safe_cell(
-                row,
-                "transformation_logic"
-            )
+            source_col = quote_identifier(safe_cell(row, "source_column"))
+            target_col = quote_identifier(safe_cell(row, "target_column"))
+            logic = safe_cell(row, "transformation_logic")
 
             if not target_col or target_col in seen_targets:
                 continue
-
             seen_targets.add(target_col)
 
-            if logic and logic.upper() not in [
-                "DIRECT",
-                "DIRECT MAPPING",
-                "N/A",
-                "NA",
-                "NONE",
-                "NULL"
-            ]:
+            if logic and logic.upper() not in ["DIRECT", "DIRECT MAPPING", "N/A", "NA", "NONE", "NULL"]:
                 select_expr = logic
-
             elif source_col:
                 select_expr = source_col
-
             else:
-                select_expr = (
-                    f"NULL /* missing source for {target_col} */"
-                )
+                select_expr = f"NULL /* missing source for {target_col} */"
 
-            select_lines.append(
-                f"    {select_expr} AS {target_col}"
-            )
+            select_lines.append(f"    {select_expr} AS {target_col}")
 
         if not select_lines:
             continue
 
-        # ---------------------------
-        # JOIN SUPPORT
-        # ---------------------------
-
-        lookup_tables = (
-            group["lookup_table"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-        )
-
-        lookup_tables = lookup_tables[
-            lookup_tables != ""
-        ]
-
-        join_conditions = (
-            group["lookup_join_condition"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-        )
-
-        join_conditions = join_conditions[
-            join_conditions != ""
-        ]
+        lookup_tables = group["lookup_table"].dropna().astype(str).str.strip()
+        lookup_tables = lookup_tables[lookup_tables != ""]
+        join_conditions = group["lookup_join_condition"].dropna().astype(str).str.strip()
+        join_conditions = join_conditions[join_conditions != ""]
 
         from_clause = f"FROM {source_table_name}"
-
-        if (
-            not lookup_tables.empty
-            and not join_conditions.empty
-        ):
-
-            lookup_table = quote_identifier(
-                lookup_tables.iloc[0]
-            )
-
-            join_condition = (
-                join_conditions.iloc[0]
-            )
-
+        if not lookup_tables.empty and not join_conditions.empty:
+            lookup_table = quote_identifier(lookup_tables.iloc[0])
+            join_condition = join_conditions.iloc[0]
             from_clause += f"""
 LEFT JOIN {lookup_table}
     ON {join_condition}
@@ -795,14 +663,10 @@ LEFT JOIN {lookup_table}
 SELECT
 {",\n".join(select_lines)}
 {from_clause};"""
-
         sql_blocks.append(sql)
 
-    return (
-        "\n\n".join(sql_blocks)
-        if sql_blocks
-        else "-- No valid SQL could be generated."
-    )
+    return "\n\n".join(sql_blocks) if sql_blocks else "-- No valid SQL could be generated."
+
 
 def generate_data_dictionary(normalized_df: pd.DataFrame) -> pd.DataFrame:
     dictionary_df = normalized_df[
@@ -811,7 +675,6 @@ def generate_data_dictionary(normalized_df: pd.DataFrame) -> pd.DataFrame:
             "target_scale", "target_nullable", "target_pk", "business_definition", "pii_flag", "data_masking_rule",
         ]
     ].copy()
-
     dictionary_df.columns = [
         "Target Table", "Target Column", "Data Type", "Length", "Precision", "Scale",
         "Nullable", "Primary Key", "Business Definition", "PII Flag", "Data Masking Rule",
@@ -828,7 +691,6 @@ def generate_tech_spec(normalized_df: pd.DataFrame) -> pd.DataFrame:
             "owner", "approval_status", "release", "notes",
         ]
     ].copy()
-
     tech_df.columns = [
         "Source System", "Source Table", "Source Column", "Target Table", "Target Column",
         "Target Data Type", "Nullable", "Transformation Type", "Transformation Logic", "Lookup Table",
@@ -840,7 +702,6 @@ def generate_tech_spec(normalized_df: pd.DataFrame) -> pd.DataFrame:
 
 def generate_dq_rules(normalized_df: pd.DataFrame) -> pd.DataFrame:
     dq_rows = []
-
     for _, row in normalized_df.iterrows():
         target_table = safe_cell(row, "target_table")
         target_col = safe_cell(row, "target_column")
@@ -860,15 +721,191 @@ def generate_dq_rules(normalized_df: pd.DataFrame) -> pd.DataFrame:
         if not generated_rules:
             generated_rules.append("No explicit DQ rule provided")
 
-        dq_rows.append({
-            "Target Table": target_table,
-            "Target Column": target_col,
-            "DQ Rule": "; ".join(generated_rules),
-            "Severity": severity,
-            "Action": action,
-        })
-
+        dq_rows.append(
+            {
+                "Target Table": target_table,
+                "Target Column": target_col,
+                "DQ Rule": "; ".join(generated_rules),
+                "Severity": severity,
+                "Action": action,
+            }
+        )
     return pd.DataFrame(dq_rows)
+
+# ==================================================
+# ENTERPRISE INTELLIGENCE, REVIEW, DEPLOYMENT, AUDIT
+# ==================================================
+def is_yes(value: str) -> bool:
+    return str(value).strip().upper() in ["Y", "YES", "TRUE", "1"]
+
+
+def generate_ai_recommendations(normalized_df: pd.DataFrame, warnings_df: pd.DataFrame) -> pd.DataFrame:
+    recommendations = []
+
+    for _, row in normalized_df.iterrows():
+        target_table = safe_cell(row, "target_table")
+        target_col = safe_cell(row, "target_column")
+        target_datatype = safe_cell(row, "target_datatype")
+        transformation_logic = safe_cell(row, "transformation_logic")
+        lookup_table = safe_cell(row, "lookup_table")
+        lookup_join_condition = safe_cell(row, "lookup_join_condition")
+
+        if is_yes(safe_cell(row, "target_pk")):
+            recommendations.append(
+                {
+                    "Category": "Data Quality",
+                    "Artifact": f"{target_table}.{target_col}",
+                    "Recommendation": "Validate uniqueness constraint for primary key column.",
+                    "Severity": "HIGH",
+                    "Status": "Pending Review",
+                }
+            )
+
+        if is_yes(safe_cell(row, "pii_flag")):
+            masking_rule = safe_cell(row, "data_masking_rule") or "Apply enterprise masking policy"
+            recommendations.append(
+                {
+                    "Category": "Security & Governance",
+                    "Artifact": f"{target_table}.{target_col}",
+                    "Recommendation": masking_rule,
+                    "Severity": "HIGH",
+                    "Status": "Pending Review",
+                }
+            )
+
+        if str(safe_cell(row, "target_nullable")).upper() in ["N", "NO", "FALSE", "0"]:
+            recommendations.append(
+                {
+                    "Category": "Data Quality",
+                    "Artifact": f"{target_table}.{target_col}",
+                    "Recommendation": "Add NOT NULL validation rule.",
+                    "Severity": "MEDIUM",
+                    "Status": "Pending Review",
+                }
+            )
+
+        if not target_datatype:
+            recommendations.append(
+                {
+                    "Category": "Metadata Completeness",
+                    "Artifact": f"{target_table}.{target_col}",
+                    "Recommendation": "Target datatype is missing. Review before deployment.",
+                    "Severity": "MEDIUM",
+                    "Status": "Pending Review",
+                }
+            )
+
+        if lookup_table or lookup_join_condition:
+            recommendations.append(
+                {
+                    "Category": "Relationship & Join Review",
+                    "Artifact": f"{target_table}.{target_col}",
+                    "Recommendation": "Review lookup join logic and add referential integrity validation.",
+                    "Severity": "MEDIUM",
+                    "Status": "Pending Review",
+                }
+            )
+
+        if transformation_logic and transformation_logic.upper() not in ["DIRECT", "DIRECT MAPPING", "N/A", "NA", "NONE", "NULL"]:
+            recommendations.append(
+                {
+                    "Category": "Transformation Review",
+                    "Artifact": f"{target_table}.{target_col}",
+                    "Recommendation": "Complex transformation detected. Add unit test and business approval.",
+                    "Severity": "MEDIUM",
+                    "Status": "Pending Review",
+                }
+            )
+
+    if not warnings_df.empty:
+        for _, warning in warnings_df.iterrows():
+            recommendations.append(
+                {
+                    "Category": "Metadata Warning",
+                    "Artifact": warning.get("Issue", "Metadata Warning"),
+                    "Recommendation": warning.get("Recommendation", "Review metadata warning."),
+                    "Severity": "MEDIUM",
+                    "Status": "Pending Review",
+                }
+            )
+
+    if not recommendations:
+        recommendations.append(
+            {
+                "Category": "Readiness",
+                "Artifact": "Project",
+                "Recommendation": "No critical AI recommendations detected. Proceed with human review.",
+                "Severity": "LOW",
+                "Status": "Pending Review",
+            }
+        )
+
+    return pd.DataFrame(recommendations).drop_duplicates().reset_index(drop=True)
+
+
+def generate_observability_metrics(normalized_df: pd.DataFrame, dq_df: pd.DataFrame, warnings_df: pd.DataFrame, ai_recommendations_df: pd.DataFrame) -> Dict[str, int]:
+    total_rows = len(normalized_df)
+    mapped_source_count = int((normalized_df["source_column"].astype(str).str.strip() != "").sum()) if total_rows else 0
+    dq_count = len(dq_df)
+    pii_count = int(normalized_df["pii_flag"].astype(str).str.upper().isin(["Y", "YES", "TRUE", "1"]).sum()) if total_rows else 0
+    table_count = int(normalized_df["target_table"].nunique()) if total_rows else 0
+    join_count = int((normalized_df["lookup_table"].astype(str).str.strip() != "").sum()) if total_rows else 0
+
+    metadata_coverage = int((mapped_source_count / total_rows) * 100) if total_rows else 0
+    dq_coverage = int((dq_count / total_rows) * 100) if total_rows else 0
+
+    return {
+        "Target Tables": table_count,
+        "Canonical Columns": total_rows,
+        "Metadata Coverage %": metadata_coverage,
+        "DQ Coverage %": dq_coverage,
+        "PII Columns": pii_count,
+        "Join Relationships": join_count,
+        "Metadata Warnings": len(warnings_df),
+        "AI Recommendations": len(ai_recommendations_df),
+    }
+
+
+def generate_review_queue(ai_recommendations_df: pd.DataFrame) -> pd.DataFrame:
+    queue = ai_recommendations_df.copy()
+    if queue.empty:
+        return queue
+    queue.insert(0, "Review ID", [f"REV-{i + 1:03d}" for i in range(len(queue))])
+    queue["Reviewer Decision"] = queue["Review ID"].map(st.session_state.review_decisions).fillna("Pending")
+    return queue
+
+
+def generate_deployment_manifest(project_name: str, workflow_status: str, metrics: Dict[str, int]) -> str:
+    safe_project_name = project_name.replace(" ", "_").replace(".", "_")
+    status = "ready_for_deployment" if workflow_status == "Approved" else "not_ready_pending_approval"
+
+    manifest = {
+        "project": safe_project_name,
+        "release": "1.0",
+        "environment": "DEV",
+        "workflow_status": workflow_status,
+        "deployment_status": status,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "artifacts": {
+            "canonical_metadata_model": "generated",
+            "er_diagram": "generated",
+            "snowflake_ddl": "generated",
+            "snowflake_sql": "generated",
+            "data_dictionary": "generated",
+            "technical_specification": "generated",
+            "dq_rules": "generated",
+            "ai_recommendations": "generated",
+            "audit_log": "generated",
+        },
+        "observability_metrics": metrics,
+        "approval_gate": {
+            "required": True,
+            "current_status": workflow_status,
+            "rule": "Deployment is allowed only after workflow_status is Approved.",
+        },
+    }
+
+    return json.dumps(manifest, indent=2)
 
 
 def generate_ai_analysis(normalized_df: pd.DataFrame) -> str:
@@ -876,7 +913,6 @@ def generate_ai_analysis(normalized_df: pd.DataFrame) -> str:
         return "OpenAI API key is not configured. Add OPENAI_API_KEY in Streamlit Secrets."
 
     sample_data = normalized_df.head(100).to_csv(index=False)
-
     prompt = f"""
 You are a Senior Data Architect.
 
@@ -893,6 +929,9 @@ Provide:
 7. Suggested Test Cases
 8. Risks
 9. Improvement Opportunities
+10. Human Review Recommendations
+11. Deployment Readiness Recommendations
+12. Observability and Audit Recommendations
 
 Relationship Analysis Instructions:
 
@@ -911,15 +950,9 @@ Canonical Metadata Model Sample:
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
     )
-
     return response.choices[0].message.content
 
 # ==================================================
@@ -933,19 +966,15 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
         return pd.read_excel(uploaded_file)
     raise ValueError("Unsupported file type. Upload CSV or Excel file.")
 
-
 # ==================================================
 # STREAMLIT UI
 # ==================================================
-uploaded_file = st.file_uploader(
-    "Upload STTM",
-    type=["csv", "xlsx", "xls"]
-)
+uploaded_file = st.file_uploader("Upload STTM", type=["csv", "xlsx", "xls"])
 
 if uploaded_file:
-
     try:
         file_name = uploaded_file.name.lower()
+        add_audit_event("STTM Uploaded", f"File uploaded: {uploaded_file.name}")
 
         # --------------------------------------------------
         # READ CSV OR MULTI-SHEET EXCEL
@@ -953,10 +982,11 @@ if uploaded_file:
         if file_name.endswith(".csv"):
             raw_df = pd.read_csv(uploaded_file)
             df = normalize_input_columns(raw_df)
-
+            sheet_names = ["CSV"]
         else:
             xls = pd.ExcelFile(uploaded_file)
             all_dfs = []
+            sheet_names = []
 
             for sheet in xls.sheet_names:
                 temp_df = pd.read_excel(xls, sheet_name=sheet)
@@ -974,28 +1004,22 @@ if uploaded_file:
 
                 temp_df["STTM_SHEET_NAME"] = sheet
                 all_dfs.append(temp_df)
+                sheet_names.append(sheet)
 
             if not all_dfs:
                 st.error("No valid STTM sheets found in the uploaded workbook.")
                 st.stop()
 
             df = pd.concat(all_dfs, ignore_index=True)
-
             st.success(f"Loaded {len(all_dfs)} STTM sheets")
-            st.write("Sheets:", ", ".join([str(s) for s in xls.sheet_names]))
+            st.write("Sheets:", ", ".join(sheet_names))
 
         # --------------------------------------------------
         # WORKBOOK SUMMARY
         # --------------------------------------------------
         if "STTM_SHEET_NAME" in df.columns:
             st.subheader("Workbook Summary")
-
-            sheet_summary = (
-                df.groupby("STTM_SHEET_NAME")
-                .size()
-                .reset_index(name="Mappings")
-            )
-
+            sheet_summary = df.groupby("STTM_SHEET_NAME").size().reset_index(name="Mappings")
             st.dataframe(sheet_summary, use_container_width=True)
 
         st.success("STTM uploaded successfully")
@@ -1011,20 +1035,18 @@ if uploaded_file:
             normalized_df, final_mapping, mapping_source, required_missing, recommended_missing = build_canonical_model(df)
             errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
 
-        st.subheader("Metadata Discovery Summary")
+        add_audit_event("Canonical Metadata Model Generated", f"Rows: {len(normalized_df)} | Quality Score: {quality_score}%")
 
+        st.subheader("Metadata Discovery Summary")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Detection Method", mapping_source)
+        col1.metric("Detection Method", "LLM Assisted" if "LLM" in mapping_source else "Rule Based")
+        st.caption(f"Method: {mapping_source}")
         col2.metric("Canonical Rows", f"{len(normalized_df):,}")
         col3.metric("Metadata Quality Score", f"{quality_score}%")
 
-        mapping_df = pd.DataFrame([
-            {
-                "Canonical Field": field,
-                "Detected Uploaded Column": final_mapping.get(field) or ""
-            }
-            for field in CANONICAL_FIELDS
-        ])
+        mapping_df = pd.DataFrame(
+            [{"Canonical Field": field, "Detected Uploaded Column": final_mapping.get(field) or ""} for field in CANONICAL_FIELDS]
+        )
 
         with st.expander("Column Mapping: STTM → Canonical Model", expanded=False):
             st.dataframe(mapping_df, use_container_width=True)
@@ -1033,16 +1055,12 @@ if uploaded_file:
         # VALIDATION RESULTS
         # --------------------------------------------------
         if not errors_df.empty:
-            st.error(
-                "Critical metadata issues found. Fix these before using generated artifacts for production."
-            )
+            st.error("Critical metadata issues found. Fix these before using generated artifacts for production.")
             st.dataframe(errors_df, use_container_width=True)
             st.stop()
 
         if not warnings_df.empty:
-            st.warning(
-                "Metadata warnings found. Artifacts can be generated, but review warnings before production use."
-            )
+            st.warning("Metadata warnings found. Artifacts can be generated, but review warnings before production use.")
             with st.expander("View Metadata Warnings", expanded=False):
                 st.dataframe(warnings_df, use_container_width=True)
 
@@ -1050,9 +1068,7 @@ if uploaded_file:
         # CANONICAL METADATA MODEL
         # --------------------------------------------------
         st.subheader("Canonical Metadata Model")
-        st.caption(
-            "Architecture: STTM → Metadata Discovery Engine → LLM Assist if needed → Canonical Metadata Model → Artifact Generators"
-        )
+        st.caption("Architecture: STTM → Metadata Discovery Engine → LLM Assist if needed → Canonical Metadata Model → Artifact Generators")
         st.dataframe(normalized_df.head(500), use_container_width=True)
 
         st.download_button(
@@ -1072,89 +1088,33 @@ if uploaded_file:
         dictionary_df = generate_data_dictionary(normalized_df)
         tech_spec_df = generate_tech_spec(normalized_df)
         dq_df = generate_dq_rules(normalized_df)
-def generate_ai_recommendations(normalized_df):
+        ai_recommendation_df = generate_ai_recommendations(normalized_df, warnings_df)
+        observability_metrics = generate_observability_metrics(normalized_df, dq_df, warnings_df, ai_recommendation_df)
 
-    recommendations = []
+        add_audit_event("Artifacts Generated", "ERD, DDL, SQL, Data Dictionary, Technical Spec, DQ Rules, AI Recommendations")
 
-    for _, row in normalized_df.iterrows():
-
-        column = row["target_column"]
-
-        if str(row["target_pk"]).upper() in ["Y","YES","TRUE","1"]:
-
-            recommendations.append({
-                "Artifact": column,
-                "Recommendation": "Validate uniqueness constraint",
-                "Severity": "HIGH",
-                "Status": "Pending Review"
-            })
-
-        if str(row["pii_flag"]).upper() in ["Y","YES","TRUE","1"]:
-
-            recommendations.append({
-                "Artifact": column,
-                "Recommendation": "Apply masking policy",
-                "Severity": "HIGH",
-                "Status": "Pending Review"
-            })
-
-        if str(row["target_nullable"]).upper() in ["N","NO","FALSE","0"]:
-
-            recommendations.append({
-                "Artifact": column,
-                "Recommendation": "Add NOT NULL validation",
-                "Severity": "MEDIUM",
-                "Status": "Pending Review"
-            })
-
-    return pd.DataFrame(recommendations)
-# ==================================================
-# ZIP PACKAGE
-# ==================================================
+        # --------------------------------------------------
+        # PROJECT PACKAGE ZIP
+        # --------------------------------------------------
+        workflow_status_for_zip = st.session_state.get(
+        "workflow_status",
+        "Draft"
+    )
+        deployment_manifest = generate_deployment_manifest(uploaded_file.name, workflow_status_for_zip, observability_metrics)
+        audit_df_for_zip = pd.DataFrame(st.session_state.audit_events)
 
         zip_buffer = BytesIO()
-
-        with zipfile.ZipFile(
-            zip_buffer,
-            "w",
-            zipfile.ZIP_DEFLATED
-        ) as zip_file:
-
-            zip_file.writestr(
-                "canonical_metadata_model.csv",
-                normalized_df.to_csv(index=False)
-            )
-
-            zip_file.writestr(
-                "snowflake_ddl.sql",
-                ddl
-            )
-
-            zip_file.writestr(
-                "snowflake_sql.sql",
-                sql
-            )
-
-            zip_file.writestr(
-                 "er_diagram.dot",
-                  graphviz_dot
-            )
-
-            zip_file.writestr(
-                "data_dictionary.csv",
-                dictionary_df.to_csv(index=False)
-            )
-
-            zip_file.writestr(
-                "technical_specification.csv",
-                tech_spec_df.to_csv(index=False)
-            )
-
-            zip_file.writestr(
-                "dq_rules.csv",
-                dq_df.to_csv(index=False)
-            )
-
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.writestr("canonical_metadata_model.csv", normalized_df.to_csv(index=False))
+            zip_file.writestr("snowflake_ddl.sql", ddl)
+            zip_file.writestr("snowflake_sql.sql", sql)
+            zip_file.writestr("er_diagram.dot", graphviz_dot)
+            zip_file.writestr("data_dictionary.csv", dictionary_df.to_csv(index=False))
+            zip_file.writestr("technical_specification.csv", tech_spec_df.to_csv(index=False))
+            zip_file.writestr("dq_rules.csv", dq_df.to_csv(index=False))
+            zip_file.writestr("ai_recommendations.csv", ai_recommendation_df.to_csv(index=False))
+            zip_file.writestr("deployment_manifest.json", deployment_manifest)
+            zip_file.writestr("audit_log.csv", audit_df_for_zip.to_csv(index=False))
         zip_buffer.seek(0)
 
         st.download_button(
@@ -1162,50 +1122,38 @@ def generate_ai_recommendations(normalized_df):
             data=zip_buffer,
             file_name="de_copilot_artifacts.zip",
             mime="application/zip",
-            use_container_width=True
+            use_container_width=True,
         )
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-            "ER Diagram",
-            "Snowflake DDL",
-            "Snowflake SQL",
-            "Data Dictionary",
-            "Technical Spec",
-            "DQ Rules",
-            "AI Analysis",
-            "Human Review"
-        ])
-        
+
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
+            [
+                "ER Diagram",
+                "Snowflake DDL",
+                "Snowflake SQL",
+                "Data Dictionary",
+                "Technical Spec",
+                "DQ Rules",
+                "🤖 AI Analysis",
+                "🧠 AI Intelligence",
+                "👤 Human Review",
+                "✅ Approval & Deployment",
+                "📊 Observability",
+                "🧾 Audit Trail",
+            ]
+        )
+
         with tab1:
-
             st.subheader("Entity Relationship Diagram")
-
             st.graphviz_chart(graphviz_dot)
-
-            st.download_button(
-                "Download ER Diagram",
-                graphviz_dot,
-                file_name="er_diagram.dot",
-                mime="text/plain",
-            )
-                
+            st.download_button("Download ER Diagram", graphviz_dot, file_name="er_diagram.dot", mime="text/plain")
 
         with tab2:
             st.code(ddl, language="sql")
-            st.download_button(
-                "Download DDL",
-                ddl,
-                file_name="snowflake_ddl.sql",
-                mime="text/plain",
-            )
+            st.download_button("Download DDL", ddl, file_name="snowflake_ddl.sql", mime="text/plain")
 
         with tab3:
             st.code(sql, language="sql")
-            st.download_button(
-                "Download SQL",
-                sql,
-                file_name="snowflake_sql.sql",
-                mime="text/plain",
-            )
+            st.download_button("Download SQL", sql, file_name="snowflake_sql.sql", mime="text/plain")
 
         with tab4:
             st.dataframe(dictionary_df, use_container_width=True)
@@ -1227,36 +1175,122 @@ def generate_ai_recommendations(normalized_df):
 
         with tab6:
             st.dataframe(dq_df, use_container_width=True)
-            st.download_button(
-                "Download DQ Rules",
-                dq_df.to_csv(index=False),
-                file_name="dq_rules.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download DQ Rules", dq_df.to_csv(index=False), file_name="dq_rules.csv", mime="text/csv")
 
         with tab7:
             st.subheader("AI STTM Analysis")
             st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows.")
-            
-            join_count = normalized_df[
-                normalized_df["lookup_table"].fillna("") != ""
-            ].shape[0]
-
-            st.metric(
-                "Join Relationships Detected",
-                join_count
-            )
+            join_count = normalized_df[normalized_df["lookup_table"].fillna("") != ""].shape[0]
+            st.metric("Join Relationships Detected", join_count)
 
             if st.button("Generate AI Insights"):
                 with st.spinner("Analyzing canonical metadata using AI..."):
                     ai_response = generate_ai_analysis(normalized_df)
+                    add_audit_event("AI Analysis Completed", "AI metadata analysis generated")
                     st.markdown(ai_response)
-                    st.download_button(
-                        "Download AI Analysis",
-                        ai_response,
-                        file_name="ai_analysis.txt",
-                        mime="text/plain",
+                    st.download_button("Download AI Analysis", ai_response, file_name="ai_analysis.txt", mime="text/plain")
+
+        with tab8:
+            st.subheader("AI Intelligence Layer")
+            st.caption("Rule-based intelligence over the Canonical Metadata Model. This layer prepares items for human review.")
+
+            rec_col1, rec_col2, rec_col3 = st.columns(3)
+            high_count = int((ai_recommendation_df["Severity"] == "HIGH").sum()) if not ai_recommendation_df.empty else 0
+            medium_count = int((ai_recommendation_df["Severity"] == "MEDIUM").sum()) if not ai_recommendation_df.empty else 0
+            low_count = int((ai_recommendation_df["Severity"] == "LOW").sum()) if not ai_recommendation_df.empty else 0
+            rec_col1.metric("High Priority", high_count)
+            rec_col2.metric("Medium Priority", medium_count)
+            rec_col3.metric("Low Priority", low_count)
+
+            st.dataframe(ai_recommendation_df, use_container_width=True)
+            st.download_button(
+                "Download AI Recommendations",
+                ai_recommendation_df.to_csv(index=False),
+                file_name="ai_recommendations.csv",
+                mime="text/csv",
+            )
+
+        with tab9:
+            st.subheader("Human Review Queue")
+            st.caption("Human-in-the-loop review before approval and deployment.")
+
+            review_queue_df = generate_review_queue(ai_recommendation_df)
+            st.dataframe(review_queue_df, use_container_width=True)
+
+            if not review_queue_df.empty:
+                selected_review_id = st.selectbox("Select Review Item", review_queue_df["Review ID"].tolist())
+                reviewer_name = st.text_input("Reviewer Name", value="Amit Singh")
+                reviewer_decision = st.selectbox("Reviewer Decision", ["Pending", "Approved", "Rejected", "Request Changes"])
+                reviewer_comment = st.text_area("Reviewer Comment", value="Reviewed as part of metadata governance workflow.")
+
+                if st.button("Save Review Decision"):
+                    st.session_state.review_decisions[selected_review_id] = reviewer_decision
+                    add_audit_event(
+                        "Human Review Decision Saved",
+                        f"{selected_review_id}: {reviewer_decision} | {reviewer_comment}",
+                        actor=reviewer_name,
                     )
+                    st.success(f"Saved decision for {selected_review_id}: {reviewer_decision}")
+
+        with tab10:
+            st.subheader("Approval & Deployment Readiness")
+            st.caption("This is a simulated deployment gate. No production deployment is triggered from the demo.")
+
+            st.session_state.workflow_status = st.selectbox(
+                "Workflow Status",
+                ["Draft", "Under Review", "Approved", "Rejected"],
+                index=["Draft", "Under Review", "Approved", "Rejected"].index(st.session_state.workflow_status),
+            )
+
+            if st.session_state.workflow_status == "Approved":
+                st.success("Deployment Status: READY FOR DEV DEPLOYMENT")
+            elif st.session_state.workflow_status == "Rejected":
+                st.error("Deployment Status: BLOCKED")
+            else:
+                st.warning("Deployment Status: NOT READY - approval required")
+
+            if st.button("Record Workflow Status"):
+                add_audit_event("Workflow Status Updated", f"Status changed to {st.session_state.workflow_status}")
+                st.success("Workflow status recorded in audit trail.")
+
+            updated_manifest = generate_deployment_manifest(uploaded_file.name, st.session_state.workflow_status, observability_metrics)
+            st.code(updated_manifest, language="json")
+            st.download_button(
+                "Download Deployment Manifest",
+                updated_manifest,
+                file_name="deployment_manifest.json",
+                mime="application/json",
+            )
+
+        with tab11:
+            st.subheader("Observability Dashboard")
+            st.caption("Metadata, generation, review, and governance coverage metrics.")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Target Tables", observability_metrics["Target Tables"])
+            m2.metric("Canonical Columns", observability_metrics["Canonical Columns"])
+            m3.metric("Metadata Coverage", f"{observability_metrics['Metadata Coverage %']}%")
+            m4.metric("DQ Coverage", f"{observability_metrics['DQ Coverage %']}%")
+
+            m5, m6, m7, m8 = st.columns(4)
+            m5.metric("PII Columns", observability_metrics["PII Columns"])
+            m6.metric("Join Relationships", observability_metrics["Join Relationships"])
+            m7.metric("Metadata Warnings", observability_metrics["Metadata Warnings"])
+            m8.metric("AI Recommendations", observability_metrics["AI Recommendations"])
+
+            st.markdown("### Observability Summary")
+            st.dataframe(pd.DataFrame([observability_metrics]), use_container_width=True)
+
+        with tab12:
+            st.subheader("Audit Trail")
+            st.caption("Traceability of metadata processing, artifact generation, review, approval, and deployment readiness events.")
+
+            audit_df = pd.DataFrame(st.session_state.audit_events)
+            if audit_df.empty:
+                st.info("No audit events recorded yet.")
+            else:
+                st.dataframe(audit_df, use_container_width=True)
+                st.download_button("Download Audit Log", audit_df.to_csv(index=False), file_name="audit_log.csv", mime="text/csv")
 
     except Exception as e:
         st.error("The STTM could not be processed.")

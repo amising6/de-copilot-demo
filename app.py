@@ -855,6 +855,7 @@ def generate_deployment_manifest(project_name: str, workflow_status: str, metric
             "technical_specification": "generated",
             "dq_rules": "generated",
             "ai_recommendations": "generated",
+            "source_ingestion_recommendation": "generated",
             "audit_log": "generated",
         },
         "observability_metrics": metrics,
@@ -949,6 +950,22 @@ def _informatica_datatype_to_canonical(datatype: str) -> str:
         "timestamp": "TIMESTAMP_NTZ", "date": "DATE", "binary": "BINARY",
     }
     return mapping.get(value, value.upper() or "VARCHAR")
+
+def _source_platform_name(database_hint: str) -> str:
+    """Return a display-safe source platform name from PowerCenter source metadata."""
+    hint = clean_value(database_hint).upper()
+    if "ORACLE" in hint:
+        return "Oracle"
+    if "SQL SERVER" in hint or "MSSQL" in hint:
+        return "SQL Server"
+    if "DB2" in hint:
+        return "DB2"
+    if "TERADATA" in hint:
+        return "Teradata"
+    if "POSTGRES" in hint:
+        return "PostgreSQL"
+    return clean_value(database_hint, "Legacy Source System")
+
 
 
 def _get_table_attributes(transformation) -> Dict[str, str]:
@@ -1126,7 +1143,10 @@ def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict
         object_type = instance.get("object_type", "")
 
         if object_type == "Source Definition" or object_name in source_defs:
+            source_database = source_defs.get(object_name, {}).get("database", "")
             return {
+                "source_system": _source_platform_name(source_database),
+                "source_database": source_database,
                 "source_table": object_name,
                 "source_column": field_name,
                 "chain": f"{object_name}.{field_name}",
@@ -1266,7 +1286,7 @@ def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict
         for target_field, target_meta in target_definition.get("fields", {}).items():
             incoming = inbound.get((target_instance, target_field), [])
             target_base = {
-                "source_system": "Informatica PowerCenter",
+                "source_system": "",
                 "source_database": "",
                 "source_schema": "",
                 "source_table": "",
@@ -1355,6 +1375,8 @@ def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict
                 upstream["source_column"] = ""
 
             target_base.update({
+                "source_system": upstream.get("source_system", ""),
+                "source_database": upstream.get("source_database", ""),
                 "source_table": upstream.get("source_table", ""),
                 "source_column": upstream.get("source_column", ""),
                 "transformation_type": transform_type or "Direct Mapping",
@@ -1507,6 +1529,127 @@ SELECT
 {joins_sql}{where_sql};"""
         )
     return "\n\n".join(sql_blocks)
+
+
+# ==================================================
+# INGESTION RECOMMENDATION ENGINE
+# ==================================================
+def _safe_raw_identifier(value: str, fallback: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_]", "_", clean_value(value).upper())
+    return value or fallback
+
+
+def build_ingestion_recommendations(normalized_df: pd.DataFrame) -> pd.DataFrame:
+    """Recommend a landing and ingestion pattern; this does not move source data."""
+    if normalized_df.empty:
+        return pd.DataFrame()
+
+    records = []
+    source_columns = ["source_system", "source_database", "source_schema", "source_table"]
+    working = normalized_df.copy()
+    for column in source_columns:
+        if column not in working.columns:
+            working[column] = ""
+        working[column] = working[column].fillna("").astype(str).str.strip()
+
+    # One recommendation per physical source table. Rows without a source are handled in validation/review.
+    source_rows = working[working["source_table"] != ""].copy()
+    if source_rows.empty:
+        return pd.DataFrame([{
+            "Source Platform": "Unresolved", "Source Object": "Unresolved source", "Recommended Landing Target": "N/A",
+            "Suggested Ingestion Mode": "Manual Decision Required", "Recommended Tooling": "Confirm source platform first",
+            "Load Pattern": "N/A", "Why": "No resolved source table was extracted from the mapping.",
+            "Open Decisions": "Confirm source system, extract method, frequency, and delete handling.",
+            "Release Gate Status": "Blocked",
+        }])
+
+    for (system, database, schema, table), group in source_rows.groupby(source_columns, dropna=False):
+        system_display = system or "Legacy Source System"
+        object_parts = [part for part in [database, schema, table] if part]
+        source_object = ".".join(object_parts) if object_parts else table
+        raw_schema = f"RAW_{_safe_raw_identifier(system_display, 'SOURCE')}"
+        landing_target = f"{raw_schema}.{_safe_raw_identifier(table, 'SOURCE_TABLE')}"
+
+        has_effective_dates = group[["effective_date_column", "end_date_column", "current_flag_column"]].fillna("").astype(str).apply(
+            lambda col: col.str.strip().ne("")
+        ).any().any()
+        has_update_strategy = group["transformation_type"].fillna("").astype(str).str.contains(
+            "Update Strategy|Sequence Generator", case=False, regex=True
+        ).any()
+        has_filter = group["filter_condition"].fillna("").astype(str).str.strip().ne("").any()
+        unresolved = group["migration_status"].fillna("").astype(str).str.contains(
+            "Manual Decision Required", case=False, regex=False
+        ).any()
+
+        system_upper = system_display.upper()
+        if "ORACLE" in system_upper:
+            tooling = "Oracle GoldenGate, AWS DMS, Qlik Replicate, or approved enterprise CDC tooling"
+            mode = "CDC preferred"
+            load_pattern = "Initial full load followed by log-based CDC into the Snowflake raw layer"
+        elif "SQL SERVER" in system_upper:
+            tooling = "SQL Server CDC / Debezium / AWS DMS / approved enterprise replication tooling"
+            mode = "CDC preferred"
+            load_pattern = "Initial full load followed by CDC into the Snowflake raw layer"
+        elif system_display == "Legacy Source System":
+            tooling = "Confirm source platform and approved ingestion service"
+            mode = "Assessment required"
+            load_pattern = "Choose batch or CDC after source discovery"
+        else:
+            tooling = "Approved enterprise batch or CDC ingestion tooling"
+            mode = "CDC preferred where source logs and freshness SLA support it"
+            load_pattern = "Initial full load followed by incremental extraction or CDC"
+
+        reason_bits = ["A raw landing table keeps ingestion separate from generated transformation logic."]
+        if has_effective_dates:
+            reason_bits.append("Effective-date or current-record fields suggest incremental/SCD review.")
+        if has_update_strategy:
+            reason_bits.append("Update-strategy behavior must be re-designed as Snowflake MERGE or insert-only logic.")
+        if has_filter:
+            reason_bits.append("Source filters should be applied in the curated transformation layer unless a source-extract rule is approved.")
+
+        decisions = [
+            "Confirm initial-load cutoff and CDC start position.",
+            "Confirm delete handling and target retention policy.",
+            "Confirm freshness SLA and ingestion schedule.",
+            "Confirm source-log access, permissions, and operational ownership.",
+        ]
+        status = "Needs Review" if unresolved or has_update_strategy else "Ready for Architecture Review"
+        if unresolved:
+            decisions.insert(0, "Resolve unmapped fields or approved defaults before release.")
+
+        records.append({
+            "Source Platform": system_display,
+            "Source Object": source_object,
+            "Recommended Landing Target": landing_target,
+            "Suggested Ingestion Mode": mode,
+            "Recommended Tooling": tooling,
+            "Load Pattern": load_pattern,
+            "Why": " ".join(reason_bits),
+            "Open Decisions": " ".join(decisions),
+            "Release Gate Status": status,
+        })
+
+    return pd.DataFrame(records).drop_duplicates().reset_index(drop=True)
+
+
+def generate_ingestion_design_note(ingestion_df: pd.DataFrame) -> str:
+    if ingestion_df.empty:
+        return "No source ingestion recommendation could be generated."
+    lines = ["# Source Ingestion Recommendation", "", "This recommendation designs the source-to-raw landing path only. It does not replace an approved CDC or replication tool.", ""]
+    for _, row in ingestion_df.iterrows():
+        lines.extend([
+            f"## {row['Source Object']}",
+            f"- Source platform: {row['Source Platform']}",
+            f"- Recommended raw landing target: `{row['Recommended Landing Target']}`", 
+            f"- Suggested ingestion mode: {row['Suggested Ingestion Mode']}",
+            f"- Tooling options: {row['Recommended Tooling']}",
+            f"- Load pattern: {row['Load Pattern']}",
+            f"- Rationale: {row['Why']}",
+            f"- Open decisions: {row['Open Decisions']}",
+            f"- Release Gate status: {row['Release Gate Status']}",
+            "",
+        ])
+    return "\n".join(lines)
 
 
 # ==================================================
@@ -1872,6 +2015,8 @@ if uploaded_file:
         graphviz_dot = generate_graphviz_erd(normalized_df)
         ddl = generate_ddl(normalized_df)
         sql = generate_sql(normalized_df)
+        ingestion_df = build_ingestion_recommendations(normalized_df)
+        ingestion_design_note = generate_ingestion_design_note(ingestion_df)
         dictionary_df = generate_data_dictionary(normalized_df)
         tech_spec_df = generate_tech_spec(normalized_df)
         dq_df = generate_dq_rules(normalized_df)
@@ -1898,7 +2043,7 @@ if uploaded_file:
         open_count = unresolved_review_count(review_queue_df)
 
         tabs = st.tabs([
-            "ER Diagram", "Snowflake DDL", "Snowflake SQL", "Data Dictionary",
+            "ER Diagram", "Snowflake DDL", "Snowflake SQL", "🚚 Ingestion Recommendation", "Data Dictionary",
             "Technical Spec", "DQ Rules", "🤖 AI Analysis", "🧠 Findings",
             "👤 Human Review", "✅ Approval & Release", "📊 Observability", "🧾 Audit Trail"
         ])
@@ -1921,18 +2066,42 @@ if uploaded_file:
             st.download_button("Download SQL", sql, file_name="snowflake_transformation.sql", mime="text/plain")
 
         with tabs[3]:
+            st.subheader("Source Ingestion Recommendation")
+            st.caption(
+                "This section recommends how source data should land in Snowflake before DE Copilot-generated transformation SQL runs. "
+                "It does not move data itself or replace an approved CDC/replication tool."
+            )
+            if input_mode == "Legacy ETL Mapping":
+                st.info(
+                    "Recommended pattern: source system → approved batch/CDC tool → Snowflake RAW layer → generated curated transformation SQL → governed release gate."
+                )
+            st.dataframe(ingestion_df, use_container_width=True)
+            st.download_button(
+                "Download Ingestion Recommendation",
+                ingestion_df.to_csv(index=False),
+                file_name="source_ingestion_recommendation.csv",
+                mime="text/csv",
+            )
+            st.download_button(
+                "Download Ingestion Design Note",
+                ingestion_design_note,
+                file_name="source_ingestion_recommendation.md",
+                mime="text/markdown",
+            )
+
+        with tabs[4]:
             st.dataframe(dictionary_df, use_container_width=True)
             st.download_button("Download Data Dictionary", dictionary_df.to_csv(index=False), file_name="data_dictionary.csv", mime="text/csv")
 
-        with tabs[4]:
+        with tabs[5]:
             st.dataframe(tech_spec_df, use_container_width=True)
             st.download_button("Download Technical Spec", tech_spec_df.to_csv(index=False), file_name="technical_spec.csv", mime="text/csv")
 
-        with tabs[5]:
+        with tabs[6]:
             st.dataframe(dq_df, use_container_width=True)
             st.download_button("Download DQ Rules", dq_df.to_csv(index=False), file_name="dq_rules.csv", mime="text/csv")
 
-        with tabs[6]:
+        with tabs[7]:
             st.subheader("AI Metadata Analysis")
             st.caption("AI analysis is advisory. The governed Release Gate remains the decision point.")
             if st.button("Generate AI Insights", key="generate_ai_insights"):
@@ -1942,7 +2111,7 @@ if uploaded_file:
                     st.markdown(ai_response)
                     st.download_button("Download AI Analysis", ai_response, file_name="ai_analysis.txt", mime="text/plain")
 
-        with tabs[7]:
+        with tabs[8]:
             st.subheader("Validation, Migration Risks & Recommendations")
             p1, p2, p3 = st.columns(3)
             p1.metric("High Priority", int((ai_recommendation_df["Severity"] == "HIGH").sum()))
@@ -1951,7 +2120,7 @@ if uploaded_file:
             st.dataframe(ai_recommendation_df, use_container_width=True)
             st.download_button("Download Findings", ai_recommendation_df.to_csv(index=False), file_name="delivery_findings.csv", mime="text/csv")
 
-        with tabs[8]:
+        with tabs[9]:
             st.subheader("Human Review Queue")
             st.caption(
                 "Risk-based review workflow. Approved or rejected items leave the active queue and appear in Review History. "
@@ -2138,7 +2307,7 @@ if uploaded_file:
                         mime="text/csv",
                     )
 
-        with tabs[9]:
+        with tabs[10]:
             st.subheader("Approval & Release Gate")
             st.caption("The release package stays locked until all review items are closed and an approver records the final decision.")
 
@@ -2190,6 +2359,8 @@ if uploaded_file:
                     zf.writestr("technical_specification.csv", tech_spec_df.to_csv(index=False))
                     zf.writestr("dq_rules.csv", dq_df.to_csv(index=False))
                     zf.writestr("delivery_findings.csv", ai_recommendation_df.to_csv(index=False))
+                    zf.writestr("source_ingestion_recommendation.csv", ingestion_df.to_csv(index=False))
+                    zf.writestr("source_ingestion_recommendation.md", ingestion_design_note)
                     zf.writestr("review_history.csv", pd.DataFrame(st.session_state.review_history).to_csv(index=False))
                     zf.writestr("deployment_manifest.json", manifest)
                     zf.writestr("audit_log.csv", pd.DataFrame(st.session_state.audit_events).to_csv(index=False))
@@ -2203,7 +2374,7 @@ if uploaded_file:
             st.download_button("Download Deployment Manifest", manifest,
                                file_name="deployment_manifest.json", mime="application/json")
 
-        with tabs[10]:
+        with tabs[11]:
             st.subheader("Observability Dashboard")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Target Tables", observability_metrics["Target Tables"])
@@ -2212,7 +2383,7 @@ if uploaded_file:
             c4.metric("Open Reviews", open_count)
             st.dataframe(pd.DataFrame([observability_metrics]), use_container_width=True)
 
-        with tabs[11]:
+        with tabs[12]:
             st.subheader("Audit Trail")
             audit_df = pd.DataFrame(st.session_state.audit_events)
             if audit_df.empty:

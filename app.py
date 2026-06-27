@@ -96,59 +96,6 @@ def add_audit_event(action: str, detail: str = "", actor: str = "DE Copilot"):
 init_session_state()
 
 # ==================================================
-# SAMPLE STTM FILES
-# ==================================================
-st.subheader("📂 Sample Business-Requirement Files")
-
-st.markdown(
-    """
-Use the sample files below to explore the Business Requirement / STTM workflow. The Legacy ETL Mapping workflow accepts Informatica PowerCenter XML exports.
-
-**Available Samples**
-
-📄 Basic STTM  
-- Single table example
-- Canonical Metadata Model
-- Snowflake DDL
-- Snowflake SQL
-- DQ Rules
-
-🛒 Retail Multi-Table STTM  
-- Customer, Product, Order model
-- ER Diagram
-- Multi-table DDL
-- SQL Generation
-
-🏦 Banking Multi-Sheet STTM  
-- Customer, Account, Transaction, Branch
-- Multi-sheet ingestion
-- Canonical Metadata Model
-- ER Diagram
-- Technical Specifications
-
-🔗 Join Example STTM
-- Lookup tables
-- Join conditions
-- Relationship metadata
-- SQL generation
-"""
-)
-
-sample_files = {
-    "📄 Download Basic STTM": "samples/sample_sttm_basic.csv",
-    "🛒 Download Retail STTM": "samples/sample_sttm_retail.xlsx",
-    "🏦 Download Banking STTM": "samples/sample_sttm_banking_multisheet.xlsx",
-    "🔗 Download Join Example STTM": "samples/sample_sttm_join_example.xlsx",
-}
-
-sample_cols = st.columns(4)
-for index, (label, file_path) in enumerate(sample_files.items()):
-    path = Path(file_path)
-    if path.exists():
-        with open(path, "rb") as f:
-            sample_cols[index % 4].download_button(label=label, data=f, file_name=path.name)
-
-# ==================================================
 # CANONICAL MODEL
 # ==================================================
 CANONICAL_FIELDS = [
@@ -1566,11 +1513,53 @@ SELECT
 # REVIEW WORKFLOW HELPERS
 # ==================================================
 def init_project_review_state(project_key: str) -> None:
+    """Reset review state when a different upload/mode becomes the active delivery packet."""
     if st.session_state.get("active_project_key") != project_key:
         st.session_state.active_project_key = project_key
         st.session_state.review_decisions = {}
         st.session_state.review_history = []
         st.session_state.workflow_status = "Draft"
+
+        # Clear widget state from the prior project so decision/comment values
+        # never leak from one review item or upload into another.
+        for key in [
+            "individual_review_id",
+            "individual_reviewer_name",
+            "individual_review_decision",
+            "individual_review_comment",
+            "bulk_review_ids",
+            "bulk_reviewer_name",
+            "bulk_review_decision",
+            "bulk_review_comment",
+            "review_feedback",
+        ]:
+            st.session_state.pop(key, None)
+
+
+def reset_individual_review_form() -> None:
+    """Called whenever a reviewer selects another REV item."""
+    st.session_state["individual_review_decision"] = "Pending"
+    st.session_state["individual_review_comment"] = ""
+
+
+def save_review_decision(review_id: str, decision: str, reviewer: str, comment: str, action: str) -> None:
+    """Persist the latest decision and an immutable history record."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.review_decisions[review_id] = {
+        "decision": decision,
+        "reviewer": reviewer,
+        "comment": comment,
+        "timestamp": timestamp,
+    }
+    st.session_state.review_history.append({
+        "Review ID": review_id,
+        "Decision": decision,
+        "Reviewer": reviewer,
+        "Comment": comment,
+        "Timestamp": timestamp,
+        "Action": action,
+    })
+    add_audit_event(action, f"{review_id}: {decision} | {comment}", actor=reviewer)
 
 
 def build_review_queue(ai_recommendations_df: pd.DataFrame) -> pd.DataFrame:
@@ -1590,8 +1579,20 @@ def build_review_queue(ai_recommendations_df: pd.DataFrame) -> pd.DataFrame:
     queue["Comment"] = queue["Review ID"].map(
         lambda rid: decision_map.get(rid, {}).get("comment", "")
     )
+    queue["Reviewed At"] = queue["Review ID"].map(
+        lambda rid: decision_map.get(rid, {}).get("timestamp", "")
+    )
+
+    # Pending and Request Changes remain active. All completed decisions move to history.
     queue["Queue Status"] = queue["Reviewer Decision"].map(
         lambda decision: "Open" if decision in ["Pending", "Request Changes"] else "Closed"
+    )
+    queue["Bulk Eligible"] = queue.apply(
+        lambda row: (
+            row["Queue Status"] == "Open"
+            and str(row.get("Severity", "")).upper() in ["LOW", "MEDIUM"]
+        ),
+        axis=1,
     )
     return queue
 
@@ -1600,6 +1601,23 @@ def unresolved_review_count(review_queue_df: pd.DataFrame) -> int:
     if review_queue_df.empty:
         return 0
     return int((review_queue_df["Queue Status"] == "Open").sum())
+
+
+def review_status_counts(review_queue_df: pd.DataFrame) -> Dict[str, int]:
+    if review_queue_df.empty:
+        return {"Open": 0, "Approved": 0, "Rejected": 0, "Request Changes": 0}
+    return {
+        "Open": int((review_queue_df["Queue Status"] == "Open").sum()),
+        "Approved": int(
+            review_queue_df["Reviewer Decision"].isin(
+                ["Approved", "Approved with Conditions"]
+            ).sum()
+        ),
+        "Rejected": int((review_queue_df["Reviewer Decision"] == "Rejected").sum()),
+        "Request Changes": int(
+            (review_queue_df["Reviewer Decision"] == "Request Changes").sum()
+        ),
+    }
 
 # ==================================================
 # FILE READER
@@ -1616,11 +1634,15 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
 # STREAMLIT UI
 # ==================================================
 st.subheader("Start a Governed Delivery Workflow")
+
 input_mode = st.radio(
     "Choose your starting point",
     ["Business Requirement / STTM", "Legacy ETL Mapping"],
     horizontal=True,
+    key="input_mode",
 )
+
+st.markdown("---")
 
 legacy_context = None
 legacy_findings_df = pd.DataFrame()
@@ -1628,27 +1650,128 @@ uploaded_file = None
 df = pd.DataFrame()
 sheet_names: List[str] = []
 
+# ==================================================
+# BUSINESS REQUIREMENT / STTM EXPERIENCE
+# ==================================================
 if input_mode == "Business Requirement / STTM":
-    st.caption("Upload a CSV or Excel source-to-target mapping or business requirement metadata.")
+    st.markdown("### Start from Business Requirements or Source-to-Target Mapping")
+    st.caption(
+        "Upload a CSV, Excel source-to-target mapping, or business requirement metadata. "
+        "DE Copilot discovers metadata and generates governed Snowflake-ready delivery artifacts."
+    )
+
+    with st.expander("Explore Sample STTM Files", expanded=False):
+        st.markdown(
+            """
+**Available samples**
+
+📄 **Basic STTM** — single-table mapping, DDL, SQL, and DQ rules  
+🛒 **Retail Multi-Table STTM** — customer, product, and order model with ERD  
+🏦 **Banking Multi-Sheet STTM** — customer, account, transaction, and branch workbook  
+🔗 **Join Example STTM** — lookup tables, join conditions, and relationship metadata  
+"""
+        )
+
+        sample_files = {
+            "📄 Download Basic STTM": "samples/sample_sttm_basic.csv",
+            "🛒 Download Retail STTM": "samples/sample_sttm_retail.xlsx",
+            "🏦 Download Banking STTM": "samples/sample_sttm_banking_multisheet.xlsx",
+            "🔗 Download Join Example STTM": "samples/sample_sttm_join_example.xlsx",
+        }
+
+        sample_cols = st.columns(4)
+        for index, (label, file_path) in enumerate(sample_files.items()):
+            path = Path(file_path)
+            if path.exists():
+                with open(path, "rb") as sample_file:
+                    sample_cols[index].download_button(
+                        label=label,
+                        data=sample_file,
+                        file_name=path.name,
+                        key=f"sample_sttm_{index}",
+                    )
+            else:
+                sample_cols[index].caption(f"Sample unavailable: {path.name}")
+
     uploaded_file = st.file_uploader(
         "Upload Business Requirement / STTM",
         type=["csv", "xlsx", "xls"],
         key="sttm_upload",
     )
+
+# ==================================================
+# LEGACY ETL EXPERIENCE
+# ==================================================
 else:
-    st.caption("Upload an Informatica PowerCenter XML export. DE Copilot extracts lineage, derived/default values, filters, lookup dependencies, migration risks, and Snowflake-ready delivery artifacts.")
+    st.markdown("### Start from Legacy ETL Metadata")
+    st.caption(
+        "Upload an Informatica PowerCenter XML export. DE Copilot extracts source and target metadata, "
+        "field-level lineage, expressions, defaults, filters, lookup dependencies, migration risks, "
+        "and Snowflake-ready delivery artifacts."
+    )
+
     legacy_platform = st.selectbox(
         "Legacy platform",
-        ["Informatica PowerCenter XML", "DataStage Export — Coming Soon", "SSIS Package — Coming Soon"],
+        [
+            "Informatica PowerCenter XML",
+            "DataStage Export — Coming Soon",
+            "SSIS Package — Coming Soon",
+            "Talend Job Export — Coming Soon",
+        ],
         key="legacy_platform",
     )
-    if legacy_platform != "Informatica PowerCenter XML":
-        st.info("Select Informatica PowerCenter XML to use the working legacy-migration adapter.")
-    uploaded_file = st.file_uploader(
-        "Upload Informatica PowerCenter XML",
-        type=["xml"],
-        key="informatica_upload",
-    )
+
+    if legacy_platform == "Informatica PowerCenter XML":
+        with st.expander("Try a Sample Informatica Mapping", expanded=False):
+            st.markdown(
+                """
+**Sample PowerCenter mapping includes**
+
+- Source Qualifier with a source filter
+- Expression transformations
+- Default and constant values
+- Filter logic
+- Lookup Procedure dependency
+- Field-level lineage
+- Target mapping
+- Migration findings that require a human decision
+"""
+            )
+
+            sample_xml_candidates = [
+                Path("samples/example.XML"),
+                Path("samples/example_informatica_mapping.xml"),
+                Path("example.XML"),
+            ]
+            sample_xml_path = next((path for path in sample_xml_candidates if path.exists()), None)
+
+            if sample_xml_path:
+                with open(sample_xml_path, "rb") as sample_file:
+                    st.download_button(
+                        "⬇️ Download Sample Informatica XML",
+                        data=sample_file,
+                        file_name="example_informatica_mapping.xml",
+                        mime="application/xml",
+                        key="download_informatica_sample",
+                    )
+            else:
+                st.info(
+                    "To enable this download, place the example XML in "
+                    "`samples/example.XML` in the deployed project."
+                )
+
+        uploaded_file = st.file_uploader(
+            "Upload Informatica PowerCenter XML",
+            type=["xml"],
+            key="informatica_upload",
+        )
+    else:
+        st.info(
+            "This adapter is on the roadmap. Select Informatica PowerCenter XML "
+            "for the working legacy-migration demo."
+        )
+        uploaded_file = None
+
 
 if uploaded_file:
     try:
@@ -1830,45 +1953,190 @@ if uploaded_file:
 
         with tabs[8]:
             st.subheader("Human Review Queue")
-            st.caption("Approved or rejected items leave the open queue and appear in Review History.")
+            st.caption(
+                "Risk-based review workflow. Approved or rejected items leave the active queue and appear in Review History. "
+                "High-priority items must be reviewed individually."
+            )
 
+            # Rebuild every run so completed decisions immediately move out of the active queue.
+            review_queue_df = build_review_queue(ai_recommendation_df)
             open_queue = review_queue_df[review_queue_df["Queue Status"] == "Open"].copy()
             closed_queue = review_queue_df[review_queue_df["Queue Status"] == "Closed"].copy()
+            counts = review_status_counts(review_queue_df)
 
-            q1, q2 = st.columns(2)
-            q1.metric("Open", len(open_queue))
-            q2.metric("Closed", len(closed_queue))
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("Open Items", counts["Open"])
+            q2.metric("Approved", counts["Approved"])
+            q3.metric("Rejected", counts["Rejected"])
+            q4.metric("Request Changes", counts["Request Changes"])
 
+            feedback = st.session_state.pop("review_feedback", "")
+            if feedback:
+                st.success(feedback)
+
+            st.markdown("### Open Review Queue")
             if open_queue.empty:
                 st.success("No open review items remain.")
             else:
-                st.dataframe(open_queue, use_container_width=True)
-                selected_review_id = st.selectbox("Select open item", open_queue["Review ID"].tolist(), key="review_item")
-                reviewer_name = st.text_input("Reviewer name", value="Amit Singh", key="reviewer_name")
-                reviewer_decision = st.selectbox("Decision", ["Approved", "Rejected", "Request Changes"], key="review_decision")
-                reviewer_comment = st.text_area("Reviewer comment", value="", key="review_comment")
+                display_cols = [
+                    col for col in [
+                        "Review ID", "Severity", "Category", "Artifact",
+                        "Recommendation", "Reviewer Decision", "Bulk Eligible"
+                    ] if col in open_queue.columns
+                ]
+                st.dataframe(open_queue[display_cols], use_container_width=True, hide_index=True)
 
-                if st.button("Save Review Decision", key="save_review"):
-                    st.session_state.review_decisions[selected_review_id] = {
-                        "decision": reviewer_decision,
-                        "reviewer": reviewer_name,
-                        "comment": reviewer_comment,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                    st.session_state.review_history.append({
-                        "Review ID": selected_review_id,
-                        "Decision": reviewer_decision,
-                        "Reviewer": reviewer_name,
-                        "Comment": reviewer_comment,
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    add_audit_event("Review Decision Recorded", f"{selected_review_id}: {reviewer_decision}", actor=reviewer_name)
-                    st.success(f"{selected_review_id} moved from the open queue to review history.")
-                    st.rerun()
+                # ----------------------------------------------------------
+                # BULK REVIEW — intentionally restricted to LOW / MEDIUM risk
+                # ----------------------------------------------------------
+                st.markdown("### Bulk Review")
+                st.caption(
+                    "Bulk review is available only for Low and Medium priority findings. "
+                    "High-priority migration and governance risks require individual review."
+                )
 
-            if not closed_queue.empty:
-                with st.expander("Review History", expanded=False):
-                    st.dataframe(closed_queue, use_container_width=True)
+                bulk_eligible_queue = open_queue[open_queue["Bulk Eligible"]].copy()
+                if bulk_eligible_queue.empty:
+                    st.info("No low- or medium-risk open items are eligible for bulk review.")
+                else:
+                    bulk_review_ids = st.multiselect(
+                        "Select multiple eligible review items",
+                        bulk_eligible_queue["Review ID"].tolist(),
+                        key="bulk_review_ids",
+                    )
+                    bulk_col1, bulk_col2 = st.columns(2)
+                    with bulk_col1:
+                        st.text_input(
+                            "Bulk reviewer name",
+                            value="Amit Singh",
+                            key="bulk_reviewer_name",
+                        )
+                    with bulk_col2:
+                        st.selectbox(
+                            "Bulk decision",
+                            ["Approved", "Approved with Conditions", "Rejected", "Request Changes"],
+                            key="bulk_review_decision",
+                        )
+
+                    st.text_area(
+                        "Bulk reviewer comment",
+                        key="bulk_review_comment",
+                        placeholder="Apply the same decision and rationale to all selected low/medium-risk items.",
+                    )
+
+                    def apply_bulk_review() -> None:
+                        selected_ids = st.session_state.get("bulk_review_ids", [])
+                        if not selected_ids:
+                            st.session_state["review_feedback"] = "Select at least one eligible review item for bulk review."
+                            return
+
+                        reviewer = clean_value(st.session_state.get("bulk_reviewer_name", "Amit Singh"), "Amit Singh")
+                        decision = st.session_state.get("bulk_review_decision", "Approved")
+                        comment = clean_value(st.session_state.get("bulk_review_comment", ""))
+
+                        for review_id in selected_ids:
+                            save_review_decision(
+                                review_id,
+                                decision,
+                                reviewer,
+                                comment,
+                                "Bulk Review Decision Recorded",
+                            )
+
+                        st.session_state["review_feedback"] = (
+                            f"Applied '{decision}' to {len(selected_ids)} eligible review item(s)."
+                        )
+                        # Reset bulk form so values cannot accidentally carry into a later selection.
+                        st.session_state["bulk_review_ids"] = []
+                        st.session_state["bulk_review_comment"] = ""
+
+                    st.button(
+                        "Apply Bulk Review Decision",
+                        key="apply_bulk_review",
+                        disabled=not bulk_review_ids,
+                        on_click=apply_bulk_review,
+                        use_container_width=True,
+                    )
+
+                # ----------------------------------------------------------
+                # INDIVIDUAL REVIEW — decision/comment reset on REV change
+                # ----------------------------------------------------------
+                st.markdown("### Individual Review")
+                st.caption("Select an item for a detailed decision. Switching the review ID clears the prior decision and comment.")
+
+                st.selectbox(
+                    "Select open item",
+                    open_queue["Review ID"].tolist(),
+                    key="individual_review_id",
+                    on_change=reset_individual_review_form,
+                )
+                st.text_input(
+                    "Reviewer name",
+                    value="Amit Singh",
+                    key="individual_reviewer_name",
+                )
+                st.selectbox(
+                    "Decision",
+                    ["Pending", "Approved", "Approved with Conditions", "Rejected", "Request Changes"],
+                    key="individual_review_decision",
+                )
+                st.text_area(
+                    "Reviewer comment",
+                    key="individual_review_comment",
+                    placeholder="Add approval rationale, conditions, rejection reason, or required changes.",
+                )
+
+                def apply_individual_review() -> None:
+                    review_id = st.session_state.get("individual_review_id")
+                    reviewer = clean_value(st.session_state.get("individual_reviewer_name", "Amit Singh"), "Amit Singh")
+                    decision = st.session_state.get("individual_review_decision", "Pending")
+                    comment = clean_value(st.session_state.get("individual_review_comment", ""))
+
+                    if not review_id:
+                        st.session_state["review_feedback"] = "Select a review item before saving."
+                        return
+                    if decision == "Pending":
+                        st.session_state["review_feedback"] = "Choose Approved, Approved with Conditions, Rejected, or Request Changes before saving."
+                        return
+
+                    save_review_decision(
+                        review_id,
+                        decision,
+                        reviewer,
+                        comment,
+                        "Individual Review Decision Recorded",
+                    )
+                    st.session_state["review_feedback"] = f"Saved {decision} for {review_id}."
+                    # The next selected REV must start with a blank decision/comment form.
+                    st.session_state.pop("individual_review_id", None)
+                    reset_individual_review_form()
+
+                st.button(
+                    "Save Review Decision",
+                    key="save_individual_review",
+                    on_click=apply_individual_review,
+                )
+
+            st.markdown("---")
+            with st.expander("Review History", expanded=False):
+                if closed_queue.empty:
+                    st.info("No completed review decisions yet.")
+                else:
+                    history_cols = [
+                        col for col in [
+                            "Review ID", "Severity", "Category", "Artifact", "Recommendation",
+                            "Reviewer Decision", "Reviewer", "Comment", "Reviewed At"
+                        ] if col in closed_queue.columns
+                    ]
+                    st.dataframe(closed_queue[history_cols], use_container_width=True, hide_index=True)
+
+                if st.session_state.get("review_history"):
+                    st.download_button(
+                        "Download Review History",
+                        pd.DataFrame(st.session_state.review_history).to_csv(index=False),
+                        file_name="review_history.csv",
+                        mime="text/csv",
+                    )
 
         with tabs[9]:
             st.subheader("Approval & Release Gate")

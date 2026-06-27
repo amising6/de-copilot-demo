@@ -1,6 +1,7 @@
 import json
 import re
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -644,7 +645,7 @@ def generate_sql(normalized_df: pd.DataFrame) -> str:
             seen_targets.add(target_col)
 
             if logic and logic.upper() not in ["DIRECT", "DIRECT MAPPING", "N/A", "NA", "NONE", "NULL"]:
-                select_expr = logic
+                select_expr = informatca_to_snowflake_expression(logic)
             elif source_col:
                 select_expr = source_col
             else:
@@ -965,6 +966,356 @@ Canonical Metadata Model Sample:
     )
     return response.choices[0].message.content
 
+
+# ==================================================
+# LEGACY INFORMATICA POWER CENTER XML ADAPTER
+# ==================================================
+def informatca_to_snowflake_expression(expression: str) -> str:
+    """Translate a small, safe subset of common Informatica syntax for generated SQL."""
+    expression = clean_value(expression)
+    if not expression:
+        return ""
+    translated = expression
+    translated = re.sub(r"\bIIF\s*\(", "IFF(", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bNVL\s*\(", "COALESCE(", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bSYSDATE\b", "CURRENT_TIMESTAMP()", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bISNULL\s*\(", "IS_NULL_VALUE(", translated, flags=re.IGNORECASE)
+    return translated
+
+
+def _xml_attr(element, attribute: str, default: str = "") -> str:
+    # PowerCenter XML exports vary between TRANSFORMATIONNAME and TRANSFORMATION_NAME.
+    wanted = re.sub(r"_", "", attribute).upper()
+    for key, value in element.attrib.items():
+        if re.sub(r"_", "", key).upper() == wanted:
+            return clean_value(value, default)
+    return default
+
+
+def _informatica_datatype_to_canonical(datatype: str) -> str:
+    value = clean_value(datatype).lower()
+    mapping = {
+        "string": "VARCHAR",
+        "nstring": "VARCHAR",
+        "varchar": "VARCHAR",
+        "char": "VARCHAR",
+        "decimal": "NUMBER",
+        "integer": "NUMBER",
+        "int": "NUMBER",
+        "bigint": "NUMBER",
+        "smallint": "NUMBER",
+        "double": "FLOAT",
+        "float": "FLOAT",
+        "date/time": "TIMESTAMP_NTZ",
+        "datetime": "TIMESTAMP_NTZ",
+        "timestamp": "TIMESTAMP_NTZ",
+        "date": "DATE",
+        "binary": "BINARY",
+    }
+    return mapping.get(value, value.upper() or "VARCHAR")
+
+
+def _get_table_attributes(transformation) -> Dict[str, str]:
+    return {
+        _xml_attr(attr, "NAME"): _xml_attr(attr, "VALUE")
+        for attr in transformation.findall("./TABLEATTRIBUTE")
+    }
+
+
+def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame], pd.DataFrame]:
+    """
+    Extract a governed, field-level canonical mapping from a PowerCenter XML export.
+    v1 supports source/target metadata, connectors, expression inventory, and lookup flags.
+    Complex objects are transparently marked as needing review rather than silently converted.
+    """
+    raw_xml = uploaded_file.getvalue()
+    root = ET.fromstring(raw_xml)
+
+    folders = root.findall(".//FOLDER")
+    if not folders:
+        raise ValueError("No POWERMART FOLDER element found. Upload a PowerCenter XML export.")
+
+    # Mapping definitions and reusable objects can be stored in different folders.
+    # Read the first executable mapping and inventory reusable objects across the export.
+    mappings = root.findall(".//MAPPING")
+    if not mappings:
+        raise ValueError("No MAPPING element found in the Informatica XML.")
+
+    mapping = mappings[0]
+    mapping_name = _xml_attr(mapping, "NAME", "INFORMATICA_MAPPING")
+
+    source_defs = {}
+    for source in root.findall(".//SOURCE"):
+        source_name = _xml_attr(source, "NAME")
+        source_defs[source_name] = {
+            "database": _xml_attr(source, "DATABASETYPE"),
+            "fields": {
+                _xml_attr(field, "NAME"): {
+                    "datatype": _informatica_datatype_to_canonical(_xml_attr(field, "DATATYPE")),
+                    "precision": _xml_attr(field, "PRECISION"),
+                    "scale": _xml_attr(field, "SCALE"),
+                    "nullable": "Y" if _xml_attr(field, "NULLABLE").upper() not in ["NOTNULL", "N", "NO"] else "N",
+                    "description": _xml_attr(field, "DESCRIPTION"),
+                }
+                for field in source.findall("./SOURCEFIELD")
+            },
+        }
+
+    target_defs = {}
+    for target in root.findall(".//TARGET"):
+        target_name = _xml_attr(target, "NAME")
+        target_defs[target_name] = {
+            "database": _xml_attr(target, "DATABASETYPE"),
+            "fields": {
+                _xml_attr(field, "NAME"): {
+                    "datatype": _informatica_datatype_to_canonical(_xml_attr(field, "DATATYPE")),
+                    "precision": _xml_attr(field, "PRECISION"),
+                    "scale": _xml_attr(field, "SCALE"),
+                    "nullable": "Y" if _xml_attr(field, "NULLABLE").upper() not in ["NOTNULL", "N", "NO"] else "N",
+                    "keytype": _xml_attr(field, "KEYTYPE"),
+                    "description": _xml_attr(field, "DESCRIPTION"),
+                }
+                for field in target.findall("./TARGETFIELD")
+            },
+        }
+
+    transformations = {}
+    for transformation in root.findall(".//TRANSFORMATION"):
+        transform_name = _xml_attr(transformation, "NAME")
+        attributes = _get_table_attributes(transformation)
+        transformations[transform_name] = {
+            "type": _xml_attr(transformation, "TYPE"),
+            "fields": {
+                _xml_attr(field, "NAME"): {
+                    "expression": _xml_attr(field, "EXPRESSION"),
+                    "datatype": _informatica_datatype_to_canonical(_xml_attr(field, "DATATYPE")),
+                    "precision": _xml_attr(field, "PRECISION"),
+                    "scale": _xml_attr(field, "SCALE"),
+                    "porttype": _xml_attr(field, "PORTTYPE"),
+                }
+                for field in transformation.findall("./TRANSFORMFIELD")
+            },
+            "attributes": attributes,
+        }
+
+    instances = {
+        _xml_attr(instance, "NAME"): {
+            "object_name": _xml_attr(instance, "TRANSFORMATIONNAME"),
+            "object_type": _xml_attr(instance, "TRANSFORMATIONTYPE"),
+        }
+        for instance in mapping.findall("./INSTANCE")
+    }
+
+    connectors = []
+    for connector in mapping.findall("./CONNECTOR"):
+        connectors.append({
+            "from_instance": _xml_attr(connector, "FROMINSTANCE"),
+            "from_field": _xml_attr(connector, "FROMFIELD"),
+            "to_instance": _xml_attr(connector, "TOINSTANCE"),
+            "to_field": _xml_attr(connector, "TOFIELD"),
+        })
+
+    inbound = {}
+    for connector in connectors:
+        inbound.setdefault((connector["to_instance"], connector["to_field"]), []).append(connector)
+
+    def resolve_upstream(instance_name: str, field_name: str, depth: int = 0) -> Dict[str, str]:
+        """Trace a field backward through connectors. v1 keeps a short lineage chain."""
+        if depth > 8:
+            return {"source_table": "", "source_column": "", "chain": "Lineage depth exceeded"}
+
+        instance = instances.get(instance_name, {})
+        object_name = instance.get("object_name", instance_name)
+        object_type = instance.get("object_type", "")
+
+        if object_type == "Source Definition" or object_name in source_defs:
+            return {"source_table": object_name, "source_column": field_name, "chain": f"{object_name}.{field_name}"}
+
+        parents = inbound.get((instance_name, field_name), [])
+        if not parents:
+            # Expression outputs often reference an INPUT field with a different name
+            # (for example CD_NACE output derived from CD_NACE_in). Follow that safely.
+            transform = transformations.get(object_name, {})
+            field_metadata = transform.get("fields", {}).get(field_name, {})
+            expression = clean_value(field_metadata.get("expression", ""))
+            # First try a direct identifier; then inspect simple function expressions
+            # such as LTRIM(RTRIM(CD_NACE_in)) for an upstream input port.
+            candidates = []
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expression):
+                candidates.extend([expression, f"{expression}_in", expression.replace("_out", "_in")])
+            else:
+                tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expression)
+                candidates.extend(reversed(tokens))
+            for candidate_field in candidates:
+                parents = inbound.get((instance_name, candidate_field), [])
+                if parents:
+                    break
+            if not parents:
+                return {"source_table": "", "source_column": "", "chain": f"{instance_name}.{field_name}"}
+
+        parent = parents[0]
+        upstream = resolve_upstream(parent["from_instance"], parent["from_field"], depth + 1)
+        chain = f"{upstream.get('chain', '')} → {instance_name}.{field_name}"
+        upstream["chain"] = chain
+        return upstream
+
+    rows = []
+    findings = []
+    target_instances = [
+        (instance_name, data)
+        for instance_name, data in instances.items()
+        if data.get("object_type") == "Target Definition" or data.get("object_name") in target_defs
+    ]
+
+    for target_instance, target_instance_data in target_instances:
+        target_table = target_instance_data.get("object_name", target_instance)
+        target_definition = target_defs.get(target_table, {"fields": {}})
+
+        for target_field, target_metadata in target_definition.get("fields", {}).items():
+            incoming = inbound.get((target_instance, target_field), [])
+            if not incoming:
+                rows.append({
+                    "source_system": "Informatica PowerCenter",
+                    "source_table": "",
+                    "source_column": "",
+                    "target_system": "Snowflake",
+                    "target_table": target_table,
+                    "target_column": target_field,
+                    "target_datatype": target_metadata.get("datatype", "VARCHAR"),
+                    "target_precision": target_metadata.get("precision", ""),
+                    "target_scale": target_metadata.get("scale", ""),
+                    "target_nullable": target_metadata.get("nullable", "Y"),
+                    "target_pk": "Y" if "PRIMARY" in target_metadata.get("keytype", "").upper() else "",
+                    "business_definition": target_metadata.get("description", ""),
+                    "transformation_type": "Unmapped Target Field",
+                    "transformation_logic": "",
+                    "dq_rule": "",
+                    "dq_severity": "HIGH",
+                    "dq_action": "Block Release",
+                    "approval_status": "Needs Review",
+                    "notes": "No incoming connector found for target field.",
+                })
+                findings.append({
+                    "Severity": "WARNING",
+                    "Issue": f"Unmapped target field: {target_table}.{target_field}",
+                    "Count": 1,
+                    "Recommendation": "Confirm whether the column is populated by a default, sequence, or manual migration rule.",
+                })
+                continue
+
+            connector = incoming[0]
+            from_instance = connector["from_instance"]
+            from_field = connector["from_field"]
+            from_instance_data = instances.get(from_instance, {})
+            transform_name = from_instance_data.get("object_name", from_instance)
+            transform_type = from_instance_data.get("object_type", "")
+            transform = transformations.get(transform_name, {})
+            transform_field = transform.get("fields", {}).get(from_field, {})
+            upstream = resolve_upstream(from_instance, from_field)
+            attrs = transform.get("attributes", {})
+
+            logic = informatca_to_snowflake_expression(transform_field.get("expression", ""))
+            lookup_table = attrs.get("Lookup table name", "")
+            lookup_condition = attrs.get("Lookup condition", "")
+
+            notes = f"Lineage: {upstream.get('chain', '')}"
+            approval_status = "Draft"
+            dq_severity = "MEDIUM"
+            dq_action = "Flag Record"
+
+            if transform_type in ["Lookup Procedure", "Lookup"]:
+                approval_status = "Needs Review"
+                notes += " | Lookup conversion requires Snowflake join/reference-table review."
+                findings.append({
+                    "Severity": "WARNING",
+                    "Issue": f"Lookup migration review required: {transform_name}",
+                    "Count": 1,
+                    "Recommendation": "Confirm reference-table join, duplicate-match behavior, and lookup cache semantics before release.",
+                })
+
+            if transform_type in ["Update Strategy", "Sequence Generator", "Router", "Aggregator", "Joiner", "Stored Procedure"]:
+                approval_status = "Needs Review"
+                dq_severity = "HIGH"
+                dq_action = "Block Release"
+                notes += f" | {transform_type} requires manual migration decision."
+                findings.append({
+                    "Severity": "WARNING",
+                    "Issue": f"Manual migration decision required: {transform_type}",
+                    "Count": 1,
+                    "Recommendation": "Review target load pattern, merge strategy, and semantic equivalence before release.",
+                })
+
+            rows.append({
+                "source_system": "Informatica PowerCenter",
+                "source_database": "",
+                "source_schema": "",
+                "source_table": upstream.get("source_table", ""),
+                "source_column": upstream.get("source_column", ""),
+                "source_datatype": "",
+                "target_system": "Snowflake",
+                "target_database": "",
+                "target_schema": "",
+                "target_table": target_table,
+                "target_column": target_field,
+                "target_datatype": target_metadata.get("datatype", "VARCHAR"),
+                "target_length": "",
+                "target_precision": target_metadata.get("precision", ""),
+                "target_scale": target_metadata.get("scale", ""),
+                "target_nullable": target_metadata.get("nullable", "Y"),
+                "target_pk": "Y" if "PRIMARY" in target_metadata.get("keytype", "").upper() else "",
+                "business_definition": target_metadata.get("description", ""),
+                "transformation_type": transform_type or "Direct Mapping",
+                "transformation_logic": logic,
+                "lookup_table": lookup_table,
+                "lookup_join_condition": lookup_condition,
+                "dq_rule": "",
+                "dq_severity": dq_severity,
+                "dq_action": dq_action,
+                "owner": "",
+                "approval_status": approval_status,
+                "release": "",
+                "notes": notes,
+            })
+
+    if not rows:
+        raise ValueError("No target field mappings could be extracted from the PowerCenter XML.")
+
+    mapping_inventory = pd.DataFrame([{
+        "Mapping": mapping_name,
+        "Source Definitions": len(source_defs),
+        "Target Definitions": len(target_defs),
+        "Instances": len(instances),
+        "Connectors": len(connectors),
+        "Transformations": len(transformations),
+        "Extracted Target Mappings": len(rows),
+    }])
+
+    transformation_inventory = pd.DataFrame([
+        {
+            "Transformation": name,
+            "Type": data.get("type", ""),
+            "Fields": len(data.get("fields", {})),
+            "Lookup Table": data.get("attributes", {}).get("Lookup table name", ""),
+            "Migration Treatment": (
+                "Needs Review" if data.get("type", "") in [
+                    "Lookup Procedure", "Lookup", "Update Strategy", "Sequence Generator",
+                    "Router", "Aggregator", "Joiner", "Stored Procedure"
+                ] else "Supported / Inventory"
+            ),
+        }
+        for name, data in transformations.items()
+    ])
+
+    return (
+        pd.DataFrame(rows),
+        {
+            "mapping_inventory": mapping_inventory,
+            "transformation_inventory": transformation_inventory,
+            "mapping_name": mapping_name,
+        },
+        pd.DataFrame(findings).drop_duplicates().reset_index(drop=True),
+    )
+
 # ==================================================
 # FILE READER
 # ==================================================
@@ -979,50 +1330,96 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
 # ==================================================
 # STREAMLIT UI
 # ==================================================
-uploaded_file = st.file_uploader("Upload STTM", type=["csv", "xlsx", "xls"])
+st.subheader("Start a Governed Delivery Workflow")
+input_mode = st.radio(
+    "Choose your starting point",
+    ["Business Requirement / STTM", "Legacy ETL Mapping"],
+    horizontal=True,
+)
+
+legacy_context = None
+uploaded_file = None
+df = pd.DataFrame()
+sheet_names = []
+
+if input_mode == "Business Requirement / STTM":
+    st.caption("Upload a CSV or Excel STTM to generate governed engineering artifacts.")
+    uploaded_file = st.file_uploader(
+        "Upload Business Requirement / STTM",
+        type=["csv", "xlsx", "xls"],
+        key="sttm_upload",
+    )
+else:
+    st.caption("Upload an Informatica PowerCenter XML export. DE Copilot will extract metadata, identify migration risks, and generate Snowflake-ready artifacts.")
+    legacy_platform = st.selectbox(
+        "Legacy platform",
+        ["Informatica PowerCenter XML", "DataStage Export — Coming Soon", "SSIS Package — Coming Soon"],
+        key="legacy_platform",
+    )
+    if legacy_platform != "Informatica PowerCenter XML":
+        st.info("This adapter is on the roadmap. Please select Informatica PowerCenter XML for the working v2 demo.")
+    uploaded_file = st.file_uploader(
+        "Upload Informatica PowerCenter XML",
+        type=["xml"],
+        key="informatica_upload",
+    )
 
 if uploaded_file:
     try:
         file_name = uploaded_file.name.lower()
-        add_audit_event("STTM Uploaded", f"File uploaded: {uploaded_file.name}")
 
         # --------------------------------------------------
-        # READ CSV OR MULTI-SHEET EXCEL
+        # INGEST BUSINESS REQUIREMENTS OR LEGACY XML
         # --------------------------------------------------
-        if file_name.endswith(".csv"):
-            raw_df = pd.read_csv(uploaded_file)
-            df = normalize_input_columns(raw_df)
-            sheet_names = ["CSV"]
-        else:
-            xls = pd.ExcelFile(uploaded_file)
-            all_dfs = []
-            sheet_names = []
-
-            for sheet in xls.sheet_names:
-                temp_df = pd.read_excel(xls, sheet_name=sheet)
-                temp_df = temp_df.dropna(how="all")
-
-                if temp_df.empty:
-                    continue
-
-                temp_df = normalize_input_columns(temp_df)
-
-                # Real-world STTMs often use one sheet per target table.
-                # If target table column is not present, use sheet name as target table.
-                if "TARGET_TABLE" not in temp_df.columns:
-                    temp_df["TARGET_TABLE"] = sheet
-
-                temp_df["STTM_SHEET_NAME"] = sheet
-                all_dfs.append(temp_df)
-                sheet_names.append(sheet)
-
-            if not all_dfs:
-                st.error("No valid STTM sheets found in the uploaded workbook.")
+        if input_mode == "Legacy ETL Mapping":
+            if not file_name.endswith(".xml"):
+                st.error("Upload a valid Informatica XML export.")
                 st.stop()
 
-            df = pd.concat(all_dfs, ignore_index=True)
-            st.success(f"Loaded {len(all_dfs)} STTM sheets")
-            st.write("Sheets:", ", ".join(sheet_names))
+            with st.spinner("Parsing Informatica PowerCenter mapping metadata..."):
+                df, legacy_context, legacy_findings_df = parse_informatica_powercenter_xml(uploaded_file)
+                df = normalize_input_columns(df)
+
+            add_audit_event(
+                "Legacy Informatica XML Uploaded",
+                f"File uploaded: {uploaded_file.name} | Mapping: {legacy_context['mapping_name']}"
+            )
+            st.success(f"Informatica mapping extracted: {legacy_context['mapping_name']}")
+        else:
+            add_audit_event("STTM Uploaded", f"File uploaded: {uploaded_file.name}")
+
+            if file_name.endswith(".csv"):
+                raw_df = pd.read_csv(uploaded_file)
+                df = normalize_input_columns(raw_df)
+                sheet_names = ["CSV"]
+            else:
+                xls = pd.ExcelFile(uploaded_file)
+                all_dfs = []
+
+                for sheet in xls.sheet_names:
+                    temp_df = pd.read_excel(xls, sheet_name=sheet)
+                    temp_df = temp_df.dropna(how="all")
+
+                    if temp_df.empty:
+                        continue
+
+                    temp_df = normalize_input_columns(temp_df)
+
+                    # Real-world STTMs often use one sheet per target table.
+                    if "TARGET_TABLE" not in temp_df.columns:
+                        temp_df["TARGET_TABLE"] = sheet
+
+                    temp_df["STTM_SHEET_NAME"] = sheet
+                    all_dfs.append(temp_df)
+                    sheet_names.append(sheet)
+
+                if not all_dfs:
+                    st.error("No valid STTM sheets found in the uploaded workbook.")
+                    st.stop()
+
+                df = pd.concat(all_dfs, ignore_index=True)
+                st.success(f"Loaded {len(all_dfs)} STTM sheets")
+                st.write("Sheets:", ", ".join(sheet_names))
 
         # --------------------------------------------------
         # WORKBOOK SUMMARY
@@ -1032,7 +1429,20 @@ if uploaded_file:
             sheet_summary = df.groupby("STTM_SHEET_NAME").size().reset_index(name="Mappings")
             st.dataframe(sheet_summary, use_container_width=True)
 
-        st.success("STTM uploaded successfully")
+        if legacy_context is not None:
+            st.subheader("Legacy Mapping Analysis")
+            st.caption("Informatica XML → Canonical Metadata Model → Governed Snowflake Delivery Packet")
+            st.dataframe(legacy_context["mapping_inventory"], use_container_width=True)
+
+            with st.expander("Detected Transformations and Migration Treatment", expanded=False):
+                st.dataframe(legacy_context["transformation_inventory"], use_container_width=True)
+
+            if not legacy_findings_df.empty:
+                st.warning("Legacy migration review items detected. These are carried into the Release Gate.")
+                with st.expander("View Legacy Migration Findings", expanded=False):
+                    st.dataframe(legacy_findings_df, use_container_width=True)
+
+        st.success("Input uploaded successfully")
         st.caption(f"Rows uploaded: {len(df):,} | Columns detected: {len(df.columns):,}")
 
         with st.expander("Uploaded STTM Preview", expanded=False):
@@ -1044,6 +1454,10 @@ if uploaded_file:
         with st.spinner("Building Canonical Metadata Model..."):
             normalized_df, final_mapping, mapping_source, required_missing, recommended_missing = build_canonical_model(df)
             errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
+
+            if legacy_context is not None and not legacy_findings_df.empty:
+                warnings_df = pd.concat([warnings_df, legacy_findings_df], ignore_index=True).drop_duplicates()
+                quality_score = max(0, quality_score - min(25, len(legacy_findings_df) * 5))
 
         add_audit_event("Canonical Metadata Model Generated", f"Rows: {len(normalized_df)} | Quality Score: {quality_score}%")
 
@@ -1078,7 +1492,7 @@ if uploaded_file:
         # CANONICAL METADATA MODEL
         # --------------------------------------------------
         st.subheader("Canonical Metadata Model")
-        st.caption("Architecture: STTM → Metadata Discovery Engine → LLM Assist if needed → Canonical Metadata Model → Artifact Generators")
+        st.caption("Architecture: Business Requirement / Legacy ETL → Metadata Discovery Engine → Canonical Metadata Model → Artifact Factory → Release Gate")
         st.dataframe(normalized_df.head(500), use_container_width=True)
 
         st.download_button(
@@ -1157,8 +1571,8 @@ if uploaded_file:
             st.download_button("Download DQ Rules", dq_df.to_csv(index=False), file_name="dq_rules.csv", mime="text/csv")
 
         with tab7:
-            st.subheader("AI STTM Analysis")
-            st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows.")
+            st.subheader("AI Metadata Analysis")
+            st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows. Legacy migration findings remain subject to human review.")
             join_count = normalized_df[normalized_df["lookup_table"].fillna("") != ""].shape[0]
             st.metric("Join Relationships Detected", join_count)
 
@@ -1369,4 +1783,4 @@ if uploaded_file:
         st.exception(e)
 
 else:
-    st.info("Upload a CSV or Excel STTM file to get started.")
+    st.info("Start from a Business Requirement / STTM or an Informatica PowerCenter XML export.")

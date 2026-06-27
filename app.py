@@ -34,40 +34,27 @@ st.title("⚙️ DE Copilot")
 
 st.markdown(
     """
+### Governed Metadata-to-Delivery Platform
 
-### Enterprise Metadata Intelligence Platform
+**Start from business intent or legacy implementation metadata.**
 
 **Architecture**
 
-STTM → Metadata Discovery Engine → Canonical Metadata Model → AI Intelligence Layer → Artifact Factory → Human Review → Approval → Deployment → Observability & Audit
+Business Requirement / STTM **or** Legacy ETL Mapping → Metadata Discovery → Canonical Metadata Model → Artifact Factory → Validation & Risk Assessment → Human Review → Approval → Release Package → Audit
 
-Transform complex source-to-target mappings into governed, production-ready data engineering assets in minutes.
+Transform source-to-target mappings, Informatica PowerCenter XML, and supporting metadata into governed, Snowflake-ready engineering artifacts.
 
-Upload a CSV or Excel STTM and automatically generate:
+**Core outputs**
 
-✅ Canonical Metadata Model  
-✅ Entity Relationship Diagram (ERD)  
-✅ Snowflake DDL  
-✅ Snowflake SQL  
-✅ Data Dictionary  
-✅ Technical Specifications  
-✅ Data Quality Rules  
-✅ AI-Powered Metadata Analysis  
-✅ AI Intelligence Recommendations  
-✅ Human Review Queue  
-✅ Approval Workflow  
-✅ Deployment Manifest  
-✅ Observability Dashboard  
-✅ Audit Trail  
+✅ Canonical Metadata & Field-Level Lineage  
+✅ Snowflake DDL and Transformation SQL  
+✅ Default / Constant / Derived Value Handling  
+✅ Data Dictionary, Technical Specification and DQ Rules  
+✅ Migration Risk Assessment and Unsupported-Pattern Flags  
+✅ Human Review Queue, Decision History and Approval Gate  
+✅ Release Package, Deployment Manifest and Audit Trail  
 
----
-
-### Why DE Copilot?
-
-A technology-agnostic metadata platform that transforms STTM metadata into reusable engineering artifacts through a Canonical Metadata Model.
-
-**Build once. Generate everywhere. Govern before deployment.**
-
+**Build once. Generate everywhere. Govern before release.**
 """
 )
 
@@ -111,11 +98,11 @@ init_session_state()
 # ==================================================
 # SAMPLE STTM FILES
 # ==================================================
-st.subheader("📂 Sample STTM Files")
+st.subheader("📂 Sample Business-Requirement Files")
 
 st.markdown(
     """
-Use the sample files below to explore DE Copilot capabilities before uploading your own STTM.
+Use the sample files below to explore the Business Requirement / STTM workflow. The Legacy ETL Mapping workflow accepts Informatica PowerCenter XML exports.
 
 **Available Samples**
 
@@ -207,6 +194,10 @@ CANONICAL_FIELDS = [
     "notes",
     "lookup_column",
     "join_type",
+    "target_default",
+    "lineage_path",
+    "migration_status",
+    "input_mode",
 ]
 
 REQUIRED_CANONICAL_FIELDS = ["target_table", "target_column"]
@@ -280,6 +271,10 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     "notes": ["NOTES", "NOTES_COMMENTS", "COMMENTS", "COMMENT", "REMARKS"],
     "lookup_column": ["LOOKUP_COLUMN", "LOOKUP_KEY", "REFERENCE_COLUMN", "REF_COLUMN"],
     "join_type": ["JOIN_TYPE", "LOOKUP_JOIN_TYPE"],
+    "target_default": ["TARGET_DEFAULT", "DEFAULT_VALUE", "DEFAULTVALUE"],
+    "lineage_path": ["LINEAGE_PATH", "LINEAGE"],
+    "migration_status": ["MIGRATION_STATUS", "CONVERSION_STATUS"],
+    "input_mode": ["INPUT_MODE", "SOURCE_MODE"],
 }
 
 # ==================================================
@@ -607,7 +602,9 @@ def generate_ddl(normalized_df: pd.DataFrame) -> str:
             data_type = snowflake_type(row)
             nullable = safe_cell(row, "target_nullable").upper()
             not_null = " NOT NULL" if nullable in ["N", "NO", "FALSE", "0"] else ""
-            column_lines.append(f"    {col_name} {data_type}{not_null}")
+            target_default = safe_cell(row, "target_default")
+            default_clause = f" DEFAULT {informatca_to_snowflake_expression(target_default)}" if target_default else ""
+            column_lines.append(f"    {col_name} {data_type}{default_clause}{not_null}")
 
         if not column_lines:
             continue
@@ -624,6 +621,11 @@ def generate_ddl(normalized_df: pd.DataFrame) -> str:
 def generate_sql(normalized_df: pd.DataFrame) -> str:
     if normalized_df.empty:
         return "-- No valid mappings found."
+
+    if "input_mode" in normalized_df.columns and (
+        normalized_df["input_mode"].astype(str).str.contains("Legacy ETL Mapping", case=False, na=False).any()
+    ):
+        return generate_legacy_snowflake_sql(normalized_df)
 
     sql_blocks = []
     for target_table, group in normalized_df.groupby("target_table", dropna=False):
@@ -970,21 +972,8 @@ Canonical Metadata Model Sample:
 # ==================================================
 # LEGACY INFORMATICA POWER CENTER XML ADAPTER
 # ==================================================
-def informatca_to_snowflake_expression(expression: str) -> str:
-    """Translate a small, safe subset of common Informatica syntax for generated SQL."""
-    expression = clean_value(expression)
-    if not expression:
-        return ""
-    translated = expression
-    translated = re.sub(r"\bIIF\s*\(", "IFF(", translated, flags=re.IGNORECASE)
-    translated = re.sub(r"\bNVL\s*\(", "COALESCE(", translated, flags=re.IGNORECASE)
-    translated = re.sub(r"\bSYSDATE\b", "CURRENT_TIMESTAMP()", translated, flags=re.IGNORECASE)
-    translated = re.sub(r"\bISNULL\s*\(", "IS_NULL_VALUE(", translated, flags=re.IGNORECASE)
-    return translated
-
-
 def _xml_attr(element, attribute: str, default: str = "") -> str:
-    # PowerCenter XML exports vary between TRANSFORMATIONNAME and TRANSFORMATION_NAME.
+    """Read PowerCenter attributes with or without underscores."""
     wanted = re.sub(r"_", "", attribute).upper()
     for key, value in element.attrib.items():
         if re.sub(r"_", "", key).upper() == wanted:
@@ -992,25 +981,25 @@ def _xml_attr(element, attribute: str, default: str = "") -> str:
     return default
 
 
+
+def _xml_raw_attr(element, attribute: str, default: str = "") -> str:
+    """Read XML attribute without treating literal SQL NULL as an empty value."""
+    wanted = re.sub(r"_", "", attribute).upper()
+    for key, value in element.attrib.items():
+        if re.sub(r"_", "", key).upper() == wanted:
+            return str(value).strip()
+    return default
+
 def _informatica_datatype_to_canonical(datatype: str) -> str:
     value = clean_value(datatype).lower()
     mapping = {
-        "string": "VARCHAR",
-        "nstring": "VARCHAR",
-        "varchar": "VARCHAR",
-        "char": "VARCHAR",
-        "decimal": "NUMBER",
-        "integer": "NUMBER",
-        "int": "NUMBER",
-        "bigint": "NUMBER",
-        "smallint": "NUMBER",
-        "double": "FLOAT",
-        "float": "FLOAT",
-        "date/time": "TIMESTAMP_NTZ",
-        "datetime": "TIMESTAMP_NTZ",
-        "timestamp": "TIMESTAMP_NTZ",
-        "date": "DATE",
-        "binary": "BINARY",
+        "string": "VARCHAR", "nstring": "VARCHAR", "varchar": "VARCHAR",
+        "varchar2": "VARCHAR", "char": "VARCHAR",
+        "decimal": "NUMBER", "number(p,s)": "NUMBER", "integer": "NUMBER",
+        "int": "NUMBER", "bigint": "NUMBER", "smallint": "NUMBER",
+        "double": "FLOAT", "float": "FLOAT",
+        "date/time": "TIMESTAMP_NTZ", "datetime": "TIMESTAMP_NTZ",
+        "timestamp": "TIMESTAMP_NTZ", "date": "DATE", "binary": "BINARY",
     }
     return mapping.get(value, value.upper() or "VARCHAR")
 
@@ -1022,46 +1011,108 @@ def _get_table_attributes(transformation) -> Dict[str, str]:
     }
 
 
+def _strip_informatica_error_default(value: str) -> str:
+    value = clean_value(value)
+    if value.upper().startswith("ERROR("):
+        return ""
+    return value
+
+
+def _replace_iif(expression: str) -> str:
+    """Convert nested Informatica IIF(cond, true, false) into Snowflake IFF()."""
+    expression = clean_value(expression)
+    if not expression:
+        return ""
+
+    result = expression
+    # IFF is valid Snowflake; loop handles nested IIF tokens safely without a full parser.
+    result = re.sub(r"\bIIF\s*\(", "IFF(", result, flags=re.IGNORECASE)
+    return result
+
+
+def informatca_to_snowflake_expression(expression: str, macro_defaults: Optional[Dict[str, str]] = None) -> str:
+    """
+    Translate a deliberately small, transparent subset of Informatica syntax.
+    Unknown functions are preserved and flagged through the review workflow.
+    """
+    expression = str(expression or "").strip()
+    if not expression:
+        return ""
+    if expression.lower() == "null":
+        return "NULL"
+
+    translated = _replace_iif(expression)
+    translated = re.sub(r":UDF\.DEFAULTSTRINGNULL\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+                        r"COALESCE(NULLIF(TRIM(\1), ''), 'XNA')", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bNVL\s*\(", "COALESCE(", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bLTRIM\s*\(\s*RTRIM\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)",
+                        r"TRIM(\1)", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bRTRIM\s*\(\s*LTRIM\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)",
+                        r"TRIM(\1)", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bSYSDATE\b", "CURRENT_TIMESTAMP()", translated, flags=re.IGNORECASE)
+    translated = re.sub(r"\bTO_DATE\s*\(\s*'\$\$([A-Za-z0-9_]+)'\s*,\s*'([^']+)'\s*\)",
+                        r"TO_TIMESTAMP_NTZ(:\1, '\2')", translated, flags=re.IGNORECASE)
+
+    # ISNULL(field) is not a Snowflake function. Translate simple occurrences.
+    translated = re.sub(r"\bISNULL\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+                        r"(\1 IS NULL)", translated, flags=re.IGNORECASE)
+    translated = translated.replace("<>", "!=")
+    return translated
+
+
+def _is_constant_sql(expression: str) -> bool:
+    return bool(re.fullmatch(r"\s*(NULL|-?\d+(\.\d+)?|'[^']*')\s*", clean_value(expression), flags=re.IGNORECASE))
+
+
+def _review_item(category: str, artifact: str, recommendation: str, severity: str = "MEDIUM",
+                 status: str = "Pending Review") -> Dict[str, str]:
+    return {
+        "Category": category,
+        "Artifact": artifact,
+        "Recommendation": recommendation,
+        "Severity": severity,
+        "Status": status,
+    }
+
+
+
+def _is_passthrough_expression(expression: str, field_name: str) -> bool:
+    return bool(re.fullmatch(r"\s*" + re.escape(field_name) + r"\s*", str(expression or ""), flags=re.IGNORECASE))
+
 def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame], pd.DataFrame]:
     """
-    Extract a governed, field-level canonical mapping from a PowerCenter XML export.
-    v1 supports source/target metadata, connectors, expression inventory, and lookup flags.
-    Complex objects are transparently marked as needing review rather than silently converted.
+    Extract a field-level governed mapping. The adapter preserves what is explicit in XML
+    and flags ambiguity; it never invents source lineage or target defaults.
     """
     raw_xml = uploaded_file.getvalue()
     root = ET.fromstring(raw_xml)
 
-    folders = root.findall(".//FOLDER")
-    if not folders:
-        raise ValueError("No POWERMART FOLDER element found. Upload a PowerCenter XML export.")
-
-    # Mapping definitions and reusable objects can be stored in different folders.
-    # Read the first executable mapping and inventory reusable objects across the export.
     mappings = root.findall(".//MAPPING")
     if not mappings:
-        raise ValueError("No MAPPING element found in the Informatica XML.")
+        raise ValueError("No MAPPING element found. Upload a valid Informatica PowerCenter XML export.")
 
     mapping = mappings[0]
     mapping_name = _xml_attr(mapping, "NAME", "INFORMATICA_MAPPING")
 
-    source_defs = {}
+    source_defs: Dict[str, Dict] = {}
     for source in root.findall(".//SOURCE"):
         source_name = _xml_attr(source, "NAME")
         source_defs[source_name] = {
-            "database": _xml_attr(source, "DATABASETYPE"),
+            "database": _xml_attr(source, "DBDNAME") or _xml_attr(source, "DATABASETYPE"),
             "fields": {
                 _xml_attr(field, "NAME"): {
                     "datatype": _informatica_datatype_to_canonical(_xml_attr(field, "DATATYPE")),
                     "precision": _xml_attr(field, "PRECISION"),
                     "scale": _xml_attr(field, "SCALE"),
-                    "nullable": "Y" if _xml_attr(field, "NULLABLE").upper() not in ["NOTNULL", "N", "NO"] else "N",
+                    "length": _xml_attr(field, "PHYSICALLENGTH") or _xml_attr(field, "LENGTH"),
+                    "nullable": "N" if _xml_attr(field, "NULLABLE").upper() in ["NOTNULL", "N", "NO"] else "Y",
                     "description": _xml_attr(field, "DESCRIPTION"),
                 }
                 for field in source.findall("./SOURCEFIELD")
             },
         }
 
-    target_defs = {}
+    target_defs: Dict[str, Dict] = {}
     for target in root.findall(".//TARGET"):
         target_name = _xml_attr(target, "NAME")
         target_defs[target_name] = {
@@ -1071,7 +1122,8 @@ def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict
                     "datatype": _informatica_datatype_to_canonical(_xml_attr(field, "DATATYPE")),
                     "precision": _xml_attr(field, "PRECISION"),
                     "scale": _xml_attr(field, "SCALE"),
-                    "nullable": "Y" if _xml_attr(field, "NULLABLE").upper() not in ["NOTNULL", "N", "NO"] else "N",
+                    "length": _xml_attr(field, "PHYSICALLENGTH") or _xml_attr(field, "LENGTH"),
+                    "nullable": "N" if _xml_attr(field, "NULLABLE").upper() in ["NOTNULL", "N", "NO"] else "Y",
                     "keytype": _xml_attr(field, "KEYTYPE"),
                     "description": _xml_attr(field, "DESCRIPTION"),
                 }
@@ -1079,15 +1131,15 @@ def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict
             },
         }
 
-    transformations = {}
+    transformations: Dict[str, Dict] = {}
     for transformation in root.findall(".//TRANSFORMATION"):
         transform_name = _xml_attr(transformation, "NAME")
-        attributes = _get_table_attributes(transformation)
         transformations[transform_name] = {
             "type": _xml_attr(transformation, "TYPE"),
             "fields": {
                 _xml_attr(field, "NAME"): {
-                    "expression": _xml_attr(field, "EXPRESSION"),
+                    "expression": _xml_raw_attr(field, "EXPRESSION"),
+                    "default": _strip_informatica_error_default(_xml_raw_attr(field, "DEFAULTVALUE")),
                     "datatype": _informatica_datatype_to_canonical(_xml_attr(field, "DATATYPE")),
                     "precision": _xml_attr(field, "PRECISION"),
                     "scale": _xml_attr(field, "SCALE"),
@@ -1095,226 +1147,459 @@ def parse_informatica_powercenter_xml(uploaded_file) -> Tuple[pd.DataFrame, Dict
                 }
                 for field in transformation.findall("./TRANSFORMFIELD")
             },
-            "attributes": attributes,
+            "attributes": _get_table_attributes(transformation),
         }
 
     instances = {
         _xml_attr(instance, "NAME"): {
             "object_name": _xml_attr(instance, "TRANSFORMATIONNAME"),
             "object_type": _xml_attr(instance, "TRANSFORMATIONTYPE"),
+            "type": _xml_attr(instance, "TYPE"),
         }
         for instance in mapping.findall("./INSTANCE")
     }
 
-    connectors = []
-    for connector in mapping.findall("./CONNECTOR"):
-        connectors.append({
-            "from_instance": _xml_attr(connector, "FROMINSTANCE"),
-            "from_field": _xml_attr(connector, "FROMFIELD"),
-            "to_instance": _xml_attr(connector, "TOINSTANCE"),
-            "to_field": _xml_attr(connector, "TOFIELD"),
-        })
+    connectors = [{
+        "from_instance": _xml_attr(connector, "FROMINSTANCE"),
+        "from_field": _xml_attr(connector, "FROMFIELD"),
+        "to_instance": _xml_attr(connector, "TOINSTANCE"),
+        "to_field": _xml_attr(connector, "TOFIELD"),
+    } for connector in mapping.findall("./CONNECTOR")]
 
-    inbound = {}
+    inbound: Dict[Tuple[str, str], List[Dict]] = {}
     for connector in connectors:
         inbound.setdefault((connector["to_instance"], connector["to_field"]), []).append(connector)
 
     def resolve_upstream(instance_name: str, field_name: str, depth: int = 0) -> Dict[str, str]:
-        """Trace a field backward through connectors. v1 keeps a short lineage chain."""
-        if depth > 8:
-            return {"source_table": "", "source_column": "", "chain": "Lineage depth exceeded"}
+        if depth > 12:
+            return {"source_table": "", "source_column": "", "chain": "Lineage depth exceeded", "expression": ""}
 
         instance = instances.get(instance_name, {})
-        object_name = instance.get("object_name", instance_name)
+        object_name = instance.get("object_name") or instance_name
         object_type = instance.get("object_type", "")
 
         if object_type == "Source Definition" or object_name in source_defs:
-            return {"source_table": object_name, "source_column": field_name, "chain": f"{object_name}.{field_name}"}
+            return {
+                "source_table": object_name,
+                "source_column": field_name,
+                "chain": f"{object_name}.{field_name}",
+                "expression": f"src.{field_name}",
+                "lookup_table": "",
+                "lookup_join_condition": "",
+            }
 
+        transform = transformations.get(object_name, {})
+        field_meta = transform.get("fields", {}).get(field_name, {})
+        field_expr = str(field_meta.get("expression", "") or "").strip()
         parents = inbound.get((instance_name, field_name), [])
-        if not parents:
-            # Expression outputs often reference an INPUT field with a different name
-            # (for example CD_NACE output derived from CD_NACE_in). Follow that safely.
-            transform = transformations.get(object_name, {})
-            field_metadata = transform.get("fields", {}).get(field_name, {})
-            expression = clean_value(field_metadata.get("expression", ""))
-            # First try a direct identifier; then inspect simple function expressions
-            # such as LTRIM(RTRIM(CD_NACE_in)) for an upstream input port.
-            candidates = []
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expression):
-                candidates.extend([expression, f"{expression}_in", expression.replace("_out", "_in")])
-            else:
-                tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expression)
-                candidates.extend(reversed(tokens))
-            for candidate_field in candidates:
-                parents = inbound.get((instance_name, candidate_field), [])
-                if parents:
+
+        # A lookup output has no inbound connection for the returned field. Trace one
+        # lookup input to retain source lineage and produce an explicit reviewable join.
+        if transform.get("type") in ["Lookup Procedure", "Lookup"] and not parents:
+            attrs = transform.get("attributes", {})
+            lookup_table = attrs.get("Lookup table name", "")
+            lookup_alias = re.sub(r"[^A-Za-z0-9_]", "_", object_name.lower())[:24] or "lkp"
+            input_parent = None
+            input_name = ""
+            for (to_instance, to_field), candidate_parents in inbound.items():
+                if to_instance == instance_name and candidate_parents:
+                    input_parent = candidate_parents[0]
+                    input_name = to_field
                     break
-            if not parents:
-                return {"source_table": "", "source_column": "", "chain": f"{instance_name}.{field_name}"}
+            upstream_input = resolve_upstream(input_parent["from_instance"], input_parent["from_field"], depth + 1) if input_parent else {}
+            lookup_condition = attrs.get("Lookup condition", "")
+            lookup_filter = attrs.get("Lookup Source Filter", "")
+            if lookup_condition and input_name and upstream_input.get("source_column"):
+                lookup_condition = re.sub(
+                    r"\b" + re.escape(input_name) + r"\b",
+                    f"src.{upstream_input['source_column']}",
+                    lookup_condition,
+                    flags=re.IGNORECASE,
+                )
+                # Left hand side lookup fields get a stable alias.
+                tokens = lookup_condition.split("=")
+                if len(tokens) == 2:
+                    left = tokens[0].strip()
+                    if "." not in left:
+                        lookup_condition = f"{lookup_alias}.{left} = {tokens[1].strip()}"
+            if lookup_filter:
+                lookup_filter = lookup_filter.replace(f"{lookup_table}.", f"{lookup_alias}.")
+                lookup_condition = f"{lookup_condition} AND {lookup_filter}" if lookup_condition else lookup_filter
+            return {
+                "source_table": upstream_input.get("source_table", ""),
+                "source_column": upstream_input.get("source_column", ""),
+                "chain": f"{upstream_input.get('chain', '')} → {instance_name}.{field_name}".strip(" →"),
+                "expression": f"{lookup_alias}.{field_name}",
+                "lookup_table": lookup_table,
+                "lookup_join_condition": lookup_condition,
+            }
 
-        parent = parents[0]
-        upstream = resolve_upstream(parent["from_instance"], parent["from_field"], depth + 1)
-        chain = f"{upstream.get('chain', '')} → {instance_name}.{field_name}"
-        upstream["chain"] = chain
-        return upstream
+        if parents:
+            parent = parents[0]
+            upstream = resolve_upstream(parent["from_instance"], parent["from_field"], depth + 1)
+            chain = f"{upstream.get('chain', '')} → {instance_name}.{field_name}".strip(" →")
+            if field_expr and not _is_passthrough_expression(field_expr, field_name):
+                translated_expr = informatca_to_snowflake_expression(field_expr)
+                # Resolve named input ports in the current expression back to source fields.
+                for (to_instance, to_field), candidate_parents in inbound.items():
+                    if to_instance != instance_name or not candidate_parents:
+                        continue
+                    binding = resolve_upstream(candidate_parents[0]["from_instance"], candidate_parents[0]["from_field"], depth + 1)
+                    replacement = binding.get("expression") or (f"src.{binding.get('source_column')}" if binding.get("source_column") else to_field)
+                    translated_expr = re.sub(r"\b" + re.escape(to_field) + r"\b", replacement, translated_expr)
+                    if not upstream.get("lookup_table") and binding.get("lookup_table"):
+                        upstream["lookup_table"] = binding.get("lookup_table")
+                        upstream["lookup_join_condition"] = binding.get("lookup_join_condition")
+                upstream["expression"] = translated_expr
+            upstream["chain"] = chain
+            return upstream
 
-    rows = []
-    findings = []
+        # Handle expression outputs whose inputs use different port names
+        # (for example CD_NACE output derived from CD_NACE_in).
+        input_bindings = []
+        translated_expr = informatca_to_snowflake_expression(field_expr) if field_expr else ""
+        propagated_lookup_table = ""
+        propagated_lookup_condition = ""
+        primary_upstream = None
+        bindings_by_port = {}
+
+        for (to_instance, to_field), candidate_parents in inbound.items():
+            if to_instance != instance_name or not candidate_parents:
+                continue
+            parent = candidate_parents[0]
+            binding = resolve_upstream(parent["from_instance"], parent["from_field"], depth + 1)
+            if primary_upstream is None:
+                primary_upstream = binding
+            bindings_by_port[to_field] = binding
+            replacement = binding.get("expression") or (
+                f"src.{binding.get('source_column')}" if binding.get("source_column") else to_field
+            )
+            if translated_expr:
+                translated_expr = re.sub(r"\b" + re.escape(to_field) + r"\b", replacement, translated_expr)
+            if not propagated_lookup_table and binding.get("lookup_table"):
+                propagated_lookup_table = binding.get("lookup_table", "")
+                propagated_lookup_condition = binding.get("lookup_join_condition", "")
+
+        if primary_upstream is not None:
+            # Prefer the input port that semantically matches the output field.
+            primary_upstream = (
+                bindings_by_port.get(f"{field_name}_in")
+                or bindings_by_port.get(field_name)
+                or primary_upstream
+            )
+            primary_upstream["expression"] = translated_expr or primary_upstream.get("expression", "")
+            primary_upstream["chain"] = f"{primary_upstream.get('chain', '')} → {instance_name}.{field_name}".strip(" →")
+            if propagated_lookup_table:
+                primary_upstream["lookup_table"] = propagated_lookup_table
+                primary_upstream["lookup_join_condition"] = propagated_lookup_condition
+            return primary_upstream
+
+        return {
+            "source_table": "",
+            "source_column": "",
+            "chain": f"{instance_name}.{field_name}",
+            "expression": informatca_to_snowflake_expression(field_expr) if field_expr.strip().lower() != "null" else "NULL",
+            "lookup_table": "",
+            "lookup_join_condition": "",
+        }
+
+    rows: List[Dict] = []
+    findings: List[Dict] = []
+
     target_instances = [
         (instance_name, data)
         for instance_name, data in instances.items()
         if data.get("object_type") == "Target Definition" or data.get("object_name") in target_defs
     ]
 
-    for target_instance, target_instance_data in target_instances:
-        target_table = target_instance_data.get("object_name", target_instance)
+    for target_instance, target_info in target_instances:
+        target_table = target_info.get("object_name") or target_instance
         target_definition = target_defs.get(target_table, {"fields": {}})
 
-        for target_field, target_metadata in target_definition.get("fields", {}).items():
+        for target_field, target_meta in target_definition.get("fields", {}).items():
             incoming = inbound.get((target_instance, target_field), [])
-            if not incoming:
-                rows.append({
-                    "source_system": "Informatica PowerCenter",
-                    "source_table": "",
-                    "source_column": "",
-                    "target_system": "Snowflake",
-                    "target_table": target_table,
-                    "target_column": target_field,
-                    "target_datatype": target_metadata.get("datatype", "VARCHAR"),
-                    "target_precision": target_metadata.get("precision", ""),
-                    "target_scale": target_metadata.get("scale", ""),
-                    "target_nullable": target_metadata.get("nullable", "Y"),
-                    "target_pk": "Y" if "PRIMARY" in target_metadata.get("keytype", "").upper() else "",
-                    "business_definition": target_metadata.get("description", ""),
-                    "transformation_type": "Unmapped Target Field",
-                    "transformation_logic": "",
-                    "dq_rule": "",
-                    "dq_severity": "HIGH",
-                    "dq_action": "Block Release",
-                    "approval_status": "Needs Review",
-                    "notes": "No incoming connector found for target field.",
-                })
-                findings.append({
-                    "Severity": "WARNING",
-                    "Issue": f"Unmapped target field: {target_table}.{target_field}",
-                    "Count": 1,
-                    "Recommendation": "Confirm whether the column is populated by a default, sequence, or manual migration rule.",
-                })
-                continue
-
-            connector = incoming[0]
-            from_instance = connector["from_instance"]
-            from_field = connector["from_field"]
-            from_instance_data = instances.get(from_instance, {})
-            transform_name = from_instance_data.get("object_name", from_instance)
-            transform_type = from_instance_data.get("object_type", "")
-            transform = transformations.get(transform_name, {})
-            transform_field = transform.get("fields", {}).get(from_field, {})
-            upstream = resolve_upstream(from_instance, from_field)
-            attrs = transform.get("attributes", {})
-
-            logic = informatca_to_snowflake_expression(transform_field.get("expression", ""))
-            lookup_table = attrs.get("Lookup table name", "")
-            lookup_condition = attrs.get("Lookup condition", "")
-
-            notes = f"Lineage: {upstream.get('chain', '')}"
-            approval_status = "Draft"
-            dq_severity = "MEDIUM"
-            dq_action = "Flag Record"
-
-            if transform_type in ["Lookup Procedure", "Lookup"]:
-                approval_status = "Needs Review"
-                notes += " | Lookup conversion requires Snowflake join/reference-table review."
-                findings.append({
-                    "Severity": "WARNING",
-                    "Issue": f"Lookup migration review required: {transform_name}",
-                    "Count": 1,
-                    "Recommendation": "Confirm reference-table join, duplicate-match behavior, and lookup cache semantics before release.",
-                })
-
-            if transform_type in ["Update Strategy", "Sequence Generator", "Router", "Aggregator", "Joiner", "Stored Procedure"]:
-                approval_status = "Needs Review"
-                dq_severity = "HIGH"
-                dq_action = "Block Release"
-                notes += f" | {transform_type} requires manual migration decision."
-                findings.append({
-                    "Severity": "WARNING",
-                    "Issue": f"Manual migration decision required: {transform_type}",
-                    "Count": 1,
-                    "Recommendation": "Review target load pattern, merge strategy, and semantic equivalence before release.",
-                })
-
-            rows.append({
+            target_base = {
                 "source_system": "Informatica PowerCenter",
                 "source_database": "",
                 "source_schema": "",
-                "source_table": upstream.get("source_table", ""),
-                "source_column": upstream.get("source_column", ""),
+                "source_table": "",
+                "source_column": "",
                 "source_datatype": "",
+                "source_nullable": "",
+                "source_pk": "",
+                "source_fk": "",
                 "target_system": "Snowflake",
                 "target_database": "",
                 "target_schema": "",
                 "target_table": target_table,
                 "target_column": target_field,
-                "target_datatype": target_metadata.get("datatype", "VARCHAR"),
-                "target_length": "",
-                "target_precision": target_metadata.get("precision", ""),
-                "target_scale": target_metadata.get("scale", ""),
-                "target_nullable": target_metadata.get("nullable", "Y"),
-                "target_pk": "Y" if "PRIMARY" in target_metadata.get("keytype", "").upper() else "",
-                "business_definition": target_metadata.get("description", ""),
+                "target_datatype": target_meta.get("datatype", "VARCHAR"),
+                "target_length": target_meta.get("length", ""),
+                "target_precision": target_meta.get("precision", ""),
+                "target_scale": target_meta.get("scale", ""),
+                "target_nullable": target_meta.get("nullable", "Y"),
+                "target_pk": "Y" if "PRIMARY" in target_meta.get("keytype", "").upper() else "",
+                "target_fk": "",
+                "business_definition": target_meta.get("description", ""),
+                "transformation_type": "",
+                "transformation_logic": "",
+                "lookup_table": "",
+                "lookup_join_condition": "",
+                "filter_condition": "",
+                "dq_rule": "",
+                "dq_severity": "MEDIUM",
+                "dq_action": "Flag Record",
+                "scd_type": "",
+                "effective_date_column": "",
+                "end_date_column": "",
+                "current_flag_column": "",
+                "pii_flag": "",
+                "data_masking_rule": "",
+                "owner": "",
+                "approval_status": "Draft",
+                "release": "",
+                "notes": "",
+                "lookup_column": "",
+                "join_type": "LEFT",
+                "target_default": "",
+                "lineage_path": "",
+                "migration_status": "Supported with Review",
+                "input_mode": "Legacy ETL Mapping",
+            }
+
+            if not incoming:
+                target_base.update({
+                    "transformation_type": "Unmapped Target Field",
+                    "approval_status": "Needs Review",
+                    "dq_severity": "HIGH",
+                    "dq_action": "Block Release",
+                    "migration_status": "Manual Decision Required",
+                    "notes": "No incoming connector or explicit Informatica default was found.",
+                    "lineage_path": f"{target_table}.{target_field}",
+                })
+                findings.append({
+                    "Severity": "HIGH",
+                    "Issue": f"Unmapped target field: {target_table}.{target_field}",
+                    "Count": 1,
+                    "Recommendation": "Confirm a valid source, an approved target default, or an explicit exclusion before release.",
+                })
+                rows.append(target_base)
+                continue
+
+            connector = incoming[0]
+            from_instance = connector["from_instance"]
+            from_field = connector["from_field"]
+            from_info = instances.get(from_instance, {})
+            transform_name = from_info.get("object_name") or from_instance
+            transform_type = from_info.get("object_type") or transformations.get(transform_name, {}).get("type", "")
+            transform = transformations.get(transform_name, {})
+            field_meta = transform.get("fields", {}).get(from_field, {})
+            attrs = transform.get("attributes", {})
+            upstream = resolve_upstream(from_instance, from_field)
+
+            logic = str(upstream.get("expression", "") or "").strip()
+            explicit_default = clean_value(field_meta.get("default", ""))
+            if not logic and explicit_default:
+                logic = informatca_to_snowflake_expression(explicit_default)
+
+            # A literal constant/default is derived logic, not a misleading physical source mapping.
+            if _is_constant_sql(logic):
+                upstream["source_table"] = ""
+                upstream["source_column"] = ""
+
+            target_base.update({
+                "source_table": upstream.get("source_table", ""),
+                "source_column": upstream.get("source_column", ""),
                 "transformation_type": transform_type or "Direct Mapping",
                 "transformation_logic": logic,
-                "lookup_table": lookup_table,
-                "lookup_join_condition": lookup_condition,
-                "dq_rule": "",
-                "dq_severity": dq_severity,
-                "dq_action": dq_action,
-                "owner": "",
-                "approval_status": approval_status,
-                "release": "",
-                "notes": notes,
+                "lookup_table": upstream.get("lookup_table", "") or attrs.get("Lookup table name", ""),
+                "lookup_join_condition": upstream.get("lookup_join_condition", "") or attrs.get("Lookup condition", ""),
+                "filter_condition": attrs.get("Filter Condition", "") or attrs.get("Source Filter", ""),
+                "target_default": explicit_default if _is_constant_sql(explicit_default) else "",
+                "lineage_path": upstream.get("chain", ""),
+                "notes": f"Lineage: {upstream.get('chain', '')}",
             })
 
+            review_types = {
+                "Lookup Procedure", "Lookup", "Update Strategy", "Sequence Generator",
+                "Router", "Aggregator", "Joiner", "Stored Procedure"
+            }
+            if transform_type in review_types:
+                target_base.update({
+                    "approval_status": "Needs Review",
+                    "migration_status": "Needs Review",
+                    "dq_severity": "HIGH" if transform_type not in ["Lookup", "Lookup Procedure"] else "MEDIUM",
+                    "dq_action": "Block Release" if transform_type not in ["Lookup", "Lookup Procedure"] else "Flag Record",
+                })
+                target_base["notes"] += f" | {transform_type} requires semantic-equivalence review."
+                findings.append({
+                    "Severity": "HIGH" if transform_type not in ["Lookup", "Lookup Procedure"] else "MEDIUM",
+                    "Issue": f"{transform_type} migration review required: {transform_name}",
+                    "Count": 1,
+                    "Recommendation": "Confirm the Snowflake implementation, edge-case behavior, and test evidence before approval.",
+                })
+
+            rows.append(target_base)
+
     if not rows:
-        raise ValueError("No target field mappings could be extracted from the PowerCenter XML.")
+        raise ValueError("No target mappings could be extracted from the Informatica XML.")
+
+    # Mapping-level Source Qualifier filters apply to every generated load block.
+    source_filters = []
+    for name, data in transformations.items():
+        if data.get("type") == "Source Qualifier":
+            value = clean_value(data.get("attributes", {}).get("Source Filter", ""))
+            if value:
+                source_filters.append(informatca_to_snowflake_expression(value))
+    if source_filters:
+        for row in rows:
+            existing = clean_value(row.get("filter_condition", ""))
+            if not existing:
+                row["filter_condition"] = " AND ".join(source_filters)
 
     mapping_inventory = pd.DataFrame([{
         "Mapping": mapping_name,
         "Source Definitions": len(source_defs),
         "Target Definitions": len(target_defs),
-        "Instances": len(instances),
-        "Connectors": len(connectors),
         "Transformations": len(transformations),
+        "Connectors": len(connectors),
         "Extracted Target Mappings": len(rows),
+        "Blocked / Needs Review": sum(1 for row in rows if row["approval_status"] == "Needs Review"),
     }])
 
-    transformation_inventory = pd.DataFrame([
-        {
-            "Transformation": name,
-            "Type": data.get("type", ""),
-            "Fields": len(data.get("fields", {})),
-            "Lookup Table": data.get("attributes", {}).get("Lookup table name", ""),
-            "Migration Treatment": (
-                "Needs Review" if data.get("type", "") in [
-                    "Lookup Procedure", "Lookup", "Update Strategy", "Sequence Generator",
-                    "Router", "Aggregator", "Joiner", "Stored Procedure"
-                ] else "Supported / Inventory"
-            ),
-        }
-        for name, data in transformations.items()
-    ])
+    transformation_inventory = pd.DataFrame([{
+        "Transformation": name,
+        "Type": data.get("type", ""),
+        "Fields": len(data.get("fields", {})),
+        "Lookup Table": data.get("attributes", {}).get("Lookup table name", ""),
+        "Migration Treatment": "Needs Review" if data.get("type") in {
+            "Lookup Procedure", "Lookup", "Update Strategy", "Sequence Generator",
+            "Router", "Aggregator", "Joiner", "Stored Procedure"
+        } else "Parsed / SQL Translation Candidate",
+    } for name, data in transformations.items()])
 
-    return (
-        pd.DataFrame(rows),
-        {
-            "mapping_inventory": mapping_inventory,
-            "transformation_inventory": transformation_inventory,
-            "mapping_name": mapping_name,
-        },
-        pd.DataFrame(findings).drop_duplicates().reset_index(drop=True),
+    canonical_df = pd.DataFrame(rows)
+    for col in CANONICAL_FIELDS:
+        if col not in canonical_df.columns:
+            canonical_df[col] = ""
+    canonical_df = canonical_df[CANONICAL_FIELDS].fillna("")
+
+    return canonical_df, {
+        "mapping_inventory": mapping_inventory,
+        "transformation_inventory": transformation_inventory,
+        "mapping_name": mapping_name,
+    }, pd.DataFrame(findings).drop_duplicates().reset_index(drop=True)
+
+
+def generate_legacy_snowflake_sql(normalized_df: pd.DataFrame) -> str:
+    """Generate SQL with explicit expressions/defaults and clear review placeholders."""
+    if normalized_df.empty:
+        return "-- No mappings available."
+
+    sql_blocks = []
+    for target_table, group in normalized_df.groupby("target_table", dropna=False):
+        target_table = quote_identifier(target_table) or "TARGET_TABLE"
+        source_tables = [v for v in group["source_table"].astype(str).str.strip().unique() if v]
+        source_table = quote_identifier(source_tables[0]) if source_tables else "SOURCE_TABLE /* REVIEW: source unresolved */"
+
+        select_lines = []
+        where_conditions = []
+        joins = []
+        seen = set()
+
+        for _, row in group.iterrows():
+            target_col = quote_identifier(safe_cell(row, "target_column"))
+            if not target_col or target_col in seen:
+                continue
+            seen.add(target_col)
+
+            logic = str(row.get("transformation_logic", "") or "").strip()
+            source_col = quote_identifier(safe_cell(row, "source_column"))
+            default = str(row.get("target_default", "") or "").strip()
+            status = safe_cell(row, "migration_status")
+            notes = safe_cell(row, "notes")
+
+            if logic:
+                expr = informatca_to_snowflake_expression(logic)
+            elif default:
+                expr = informatca_to_snowflake_expression(default)
+            elif source_col:
+                expr = source_col
+            else:
+                expr = f"NULL /* REVIEW REQUIRED: {target_col} has no approved source/default */"
+
+            if status == "Manual Decision Required":
+                expr += " /* BLOCKED: confirm mapping/default before release */"
+
+            select_lines.append(f"    {expr} AS {target_col}")
+
+            filter_condition = safe_cell(row, "filter_condition")
+            if filter_condition and filter_condition not in where_conditions:
+                where_conditions.append(informatca_to_snowflake_expression(filter_condition))
+
+            lookup_table = safe_cell(row, "lookup_table")
+            lookup_condition = safe_cell(row, "lookup_join_condition")
+            if lookup_table:
+                comment = f"-- REVIEW: Informatica lookup {lookup_table}"
+                if lookup_condition:
+                    alias_match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\.", lookup_condition)
+                    lookup_alias = alias_match.group(1) if alias_match else "lkp"
+                    joins.append(f"LEFT JOIN {lookup_table} {lookup_alias}\n    ON {informatca_to_snowflake_expression(lookup_condition)} {comment}")
+                else:
+                    joins.append(f"/* {comment}; join condition not resolved */")
+
+        from_clause = f"FROM {source_table} src"
+        joins_sql = "\n".join(dict.fromkeys(joins))
+        where_sql = f"\nWHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+
+        sql_blocks.append(
+            f"""INSERT INTO {target_table}
+SELECT
+{",\n".join(select_lines)}
+{from_clause}
+{joins_sql}{where_sql};"""
+        )
+    return "\n\n".join(sql_blocks)
+
+
+# ==================================================
+# REVIEW WORKFLOW HELPERS
+# ==================================================
+def init_project_review_state(project_key: str) -> None:
+    if st.session_state.get("active_project_key") != project_key:
+        st.session_state.active_project_key = project_key
+        st.session_state.review_decisions = {}
+        st.session_state.review_history = []
+        st.session_state.workflow_status = "Draft"
+
+
+def build_review_queue(ai_recommendations_df: pd.DataFrame) -> pd.DataFrame:
+    if ai_recommendations_df.empty:
+        return pd.DataFrame()
+
+    queue = ai_recommendations_df.copy().reset_index(drop=True)
+    queue.insert(0, "Review ID", [f"REV-{idx + 1:03d}" for idx in range(len(queue))])
+
+    decision_map = st.session_state.get("review_decisions", {})
+    queue["Reviewer Decision"] = queue["Review ID"].map(
+        lambda rid: decision_map.get(rid, {}).get("decision", "Pending")
     )
+    queue["Reviewer"] = queue["Review ID"].map(
+        lambda rid: decision_map.get(rid, {}).get("reviewer", "")
+    )
+    queue["Comment"] = queue["Review ID"].map(
+        lambda rid: decision_map.get(rid, {}).get("comment", "")
+    )
+    queue["Queue Status"] = queue["Reviewer Decision"].map(
+        lambda decision: "Open" if decision in ["Pending", "Request Changes"] else "Closed"
+    )
+    return queue
+
+
+def unresolved_review_count(review_queue_df: pd.DataFrame) -> int:
+    if review_queue_df.empty:
+        return 0
+    return int((review_queue_df["Queue Status"] == "Open").sum())
 
 # ==================================================
 # FILE READER
@@ -1338,26 +1623,27 @@ input_mode = st.radio(
 )
 
 legacy_context = None
+legacy_findings_df = pd.DataFrame()
 uploaded_file = None
 df = pd.DataFrame()
-sheet_names = []
+sheet_names: List[str] = []
 
 if input_mode == "Business Requirement / STTM":
-    st.caption("Upload a CSV or Excel STTM to generate governed engineering artifacts.")
+    st.caption("Upload a CSV or Excel source-to-target mapping or business requirement metadata.")
     uploaded_file = st.file_uploader(
         "Upload Business Requirement / STTM",
         type=["csv", "xlsx", "xls"],
         key="sttm_upload",
     )
 else:
-    st.caption("Upload an Informatica PowerCenter XML export. DE Copilot will extract metadata, identify migration risks, and generate Snowflake-ready artifacts.")
+    st.caption("Upload an Informatica PowerCenter XML export. DE Copilot extracts lineage, derived/default values, filters, lookup dependencies, migration risks, and Snowflake-ready delivery artifacts.")
     legacy_platform = st.selectbox(
         "Legacy platform",
         ["Informatica PowerCenter XML", "DataStage Export — Coming Soon", "SSIS Package — Coming Soon"],
         key="legacy_platform",
     )
     if legacy_platform != "Informatica PowerCenter XML":
-        st.info("This adapter is on the roadmap. Please select Informatica PowerCenter XML for the working v2 demo.")
+        st.info("Select Informatica PowerCenter XML to use the working legacy-migration adapter.")
     uploaded_file = st.file_uploader(
         "Upload Informatica PowerCenter XML",
         type=["xml"],
@@ -1367,26 +1653,42 @@ else:
 if uploaded_file:
     try:
         file_name = uploaded_file.name.lower()
+        project_key = f"{input_mode}:{uploaded_file.name}:{getattr(uploaded_file, 'size', '')}"
+        init_project_review_state(project_key)
 
-        # --------------------------------------------------
-        # INGEST BUSINESS REQUIREMENTS OR LEGACY XML
-        # --------------------------------------------------
         if input_mode == "Legacy ETL Mapping":
             if not file_name.endswith(".xml"):
                 st.error("Upload a valid Informatica XML export.")
                 st.stop()
 
-            with st.spinner("Parsing Informatica PowerCenter mapping metadata..."):
-                df, legacy_context, legacy_findings_df = parse_informatica_powercenter_xml(uploaded_file)
-                df = normalize_input_columns(df)
+            with st.spinner("Parsing Informatica PowerCenter metadata and field lineage..."):
+                normalized_df, legacy_context, legacy_findings_df = parse_informatica_powercenter_xml(uploaded_file)
+                errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
 
-            add_audit_event(
-                "Legacy Informatica XML Uploaded",
-                f"File uploaded: {uploaded_file.name} | Mapping: {legacy_context['mapping_name']}"
-            )
-            st.success(f"Informatica mapping extracted: {legacy_context['mapping_name']}")
+            if not legacy_findings_df.empty:
+                warnings_df = pd.concat([warnings_df, legacy_findings_df], ignore_index=True).drop_duplicates()
+                quality_score = max(0, quality_score - min(30, len(legacy_findings_df) * 5))
+
+            mapping_source = "Informatica PowerCenter XML Adapter"
+            final_mapping = {field: field for field in CANONICAL_FIELDS}
+            add_audit_event("Legacy Mapping Parsed", f"{legacy_context['mapping_name']} | {len(normalized_df)} target fields extracted")
+
+            st.success(f"Mapping extracted: {legacy_context['mapping_name']}")
+            st.subheader("Legacy Mapping Analysis")
+            m1, m2, m3, m4 = st.columns(4)
+            inventory = legacy_context["mapping_inventory"].iloc[0]
+            m1.metric("Source Definitions", inventory["Source Definitions"])
+            m2.metric("Target Definitions", inventory["Target Definitions"])
+            m3.metric("Transformations", inventory["Transformations"])
+            m4.metric("Review Items", inventory["Blocked / Needs Review"])
+
+            with st.expander("Detected Transformations and Migration Treatment", expanded=False):
+                st.dataframe(legacy_context["transformation_inventory"], use_container_width=True)
+
+            if not legacy_findings_df.empty:
+                st.warning("The adapter found migration risks. They will remain in the Release Gate until reviewed.")
         else:
-            add_audit_event("STTM Uploaded", f"File uploaded: {uploaded_file.name}")
+            add_audit_event("Business Requirement / STTM Uploaded", f"File: {uploaded_file.name}")
 
             if file_name.endswith(".csv"):
                 raw_df = pd.read_csv(uploaded_file)
@@ -1395,116 +1697,54 @@ if uploaded_file:
             else:
                 xls = pd.ExcelFile(uploaded_file)
                 all_dfs = []
-
                 for sheet in xls.sheet_names:
-                    temp_df = pd.read_excel(xls, sheet_name=sheet)
-                    temp_df = temp_df.dropna(how="all")
-
+                    temp_df = pd.read_excel(xls, sheet_name=sheet).dropna(how="all")
                     if temp_df.empty:
                         continue
-
                     temp_df = normalize_input_columns(temp_df)
-
-                    # Real-world STTMs often use one sheet per target table.
                     if "TARGET_TABLE" not in temp_df.columns:
                         temp_df["TARGET_TABLE"] = sheet
-
                     temp_df["STTM_SHEET_NAME"] = sheet
                     all_dfs.append(temp_df)
                     sheet_names.append(sheet)
 
                 if not all_dfs:
-                    st.error("No valid STTM sheets found in the uploaded workbook.")
+                    st.error("No valid STTM sheets found in the workbook.")
                     st.stop()
-
                 df = pd.concat(all_dfs, ignore_index=True)
-                st.success(f"Loaded {len(all_dfs)} STTM sheets")
-                st.write("Sheets:", ", ".join(sheet_names))
 
-        # --------------------------------------------------
-        # WORKBOOK SUMMARY
-        # --------------------------------------------------
-        if "STTM_SHEET_NAME" in df.columns:
-            st.subheader("Workbook Summary")
-            sheet_summary = df.groupby("STTM_SHEET_NAME").size().reset_index(name="Mappings")
-            st.dataframe(sheet_summary, use_container_width=True)
+            if "STTM_SHEET_NAME" in df.columns:
+                st.subheader("Workbook Summary")
+                st.dataframe(df.groupby("STTM_SHEET_NAME").size().reset_index(name="Mappings"), use_container_width=True)
 
-        if legacy_context is not None:
-            st.subheader("Legacy Mapping Analysis")
-            st.caption("Informatica XML → Canonical Metadata Model → Governed Snowflake Delivery Packet")
-            st.dataframe(legacy_context["mapping_inventory"], use_container_width=True)
+            with st.spinner("Building Canonical Metadata Model..."):
+                normalized_df, final_mapping, mapping_source, _, _ = build_canonical_model(df)
+                errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
 
-            with st.expander("Detected Transformations and Migration Treatment", expanded=False):
-                st.dataframe(legacy_context["transformation_inventory"], use_container_width=True)
-
-            if not legacy_findings_df.empty:
-                st.warning("Legacy migration review items detected. These are carried into the Release Gate.")
-                with st.expander("View Legacy Migration Findings", expanded=False):
-                    st.dataframe(legacy_findings_df, use_container_width=True)
-
-        st.success("Input uploaded successfully")
-        st.caption(f"Rows uploaded: {len(df):,} | Columns detected: {len(df.columns):,}")
-
-        with st.expander("Uploaded STTM Preview", expanded=False):
-            st.dataframe(df.head(200), use_container_width=True)
-
-        # --------------------------------------------------
-        # BUILD CANONICAL MODEL
-        # --------------------------------------------------
-        with st.spinner("Building Canonical Metadata Model..."):
-            normalized_df, final_mapping, mapping_source, required_missing, recommended_missing = build_canonical_model(df)
-            errors_df, warnings_df, quality_score = validate_canonical_model(normalized_df)
-
-            if legacy_context is not None and not legacy_findings_df.empty:
-                warnings_df = pd.concat([warnings_df, legacy_findings_df], ignore_index=True).drop_duplicates()
-                quality_score = max(0, quality_score - min(25, len(legacy_findings_df) * 5))
-
-        add_audit_event("Canonical Metadata Model Generated", f"Rows: {len(normalized_df)} | Quality Score: {quality_score}%")
+            add_audit_event("Canonical Metadata Model Generated", f"Rows: {len(normalized_df)} | Quality: {quality_score}%")
 
         st.subheader("Metadata Discovery Summary")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Detection Method", "LLM Assisted" if "LLM" in mapping_source else "Rule Based")
-        st.caption(f"Method: {mapping_source}")
-        col2.metric("Canonical Rows", f"{len(normalized_df):,}")
-        col3.metric("Metadata Quality Score", f"{quality_score}%")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Input Mode", "Legacy ETL" if input_mode == "Legacy ETL Mapping" else "Business Requirement")
+        s2.metric("Discovery Method", "XML Adapter" if input_mode == "Legacy ETL Mapping" else ("LLM Assisted" if "LLM" in mapping_source else "Rule Based"))
+        s3.metric("Canonical Fields", f"{len(normalized_df):,}")
+        s4.metric("Metadata Quality", f"{quality_score}%")
 
-        mapping_df = pd.DataFrame(
-            [{"Canonical Field": field, "Detected Uploaded Column": final_mapping.get(field) or ""} for field in CANONICAL_FIELDS]
-        )
-
-        with st.expander("Column Mapping: STTM → Canonical Model", expanded=False):
-            st.dataframe(mapping_df, use_container_width=True)
-
-        # --------------------------------------------------
-        # VALIDATION RESULTS
-        # --------------------------------------------------
         if not errors_df.empty:
-            st.error("Critical metadata issues found. Fix these before using generated artifacts for production.")
+            st.error("Critical metadata issues found. Resolve these before release.")
             st.dataframe(errors_df, use_container_width=True)
-            st.stop()
 
         if not warnings_df.empty:
-            st.warning("Metadata warnings found. Artifacts can be generated, but review warnings before production use.")
-            with st.expander("View Metadata Warnings", expanded=False):
+            st.warning("Review findings exist. Artifacts are generated for analysis, but the release gate remains controlled.")
+            with st.expander("View Validation and Migration Findings", expanded=False):
                 st.dataframe(warnings_df, use_container_width=True)
 
-        # --------------------------------------------------
-        # CANONICAL METADATA MODEL
-        # --------------------------------------------------
-        st.subheader("Canonical Metadata Model")
-        st.caption("Architecture: Business Requirement / Legacy ETL → Metadata Discovery Engine → Canonical Metadata Model → Artifact Factory → Release Gate")
-        st.dataframe(normalized_df.head(500), use_container_width=True)
+        with st.expander("Canonical Metadata Model", expanded=False):
+            st.caption("The shared model used by both Business Requirement and Legacy ETL paths.")
+            st.dataframe(normalized_df.head(500), use_container_width=True)
+            st.download_button("Download Canonical Metadata", normalized_df.to_csv(index=False),
+                               file_name="canonical_metadata_model.csv", mime="text/csv")
 
-        st.download_button(
-            "Download Canonical Metadata Model",
-            normalized_df.to_csv(index=False),
-            file_name="canonical_metadata_model.csv",
-            mime="text/csv",
-        )
-
-        # --------------------------------------------------
-        # GENERATE ARTIFACTS
-        # --------------------------------------------------
         er_diagram = generate_er_diagram(normalized_df)
         graphviz_dot = generate_graphviz_erd(normalized_df)
         ddl = generate_ddl(normalized_df)
@@ -1513,274 +1753,209 @@ if uploaded_file:
         tech_spec_df = generate_tech_spec(normalized_df)
         dq_df = generate_dq_rules(normalized_df)
         ai_recommendation_df = generate_ai_recommendations(normalized_df, warnings_df)
+
+        # Add one review item per explicit migration/manual mapping status.
+        if input_mode == "Legacy ETL Mapping":
+            special_review_items = []
+            for _, row in normalized_df.iterrows():
+                if safe_cell(row, "migration_status") in ["Needs Review", "Manual Decision Required"]:
+                    special_review_items.append(
+                        _review_item(
+                            "Legacy Migration",
+                            f"{safe_cell(row, 'target_table')}.{safe_cell(row, 'target_column')}",
+                            safe_cell(row, "notes") or "Confirm equivalent Snowflake implementation.",
+                            "HIGH" if safe_cell(row, "migration_status") == "Manual Decision Required" else "MEDIUM",
+                        )
+                    )
+            if special_review_items:
+                ai_recommendation_df = pd.concat([ai_recommendation_df, pd.DataFrame(special_review_items)], ignore_index=True).drop_duplicates()
+
         observability_metrics = generate_observability_metrics(normalized_df, dq_df, warnings_df, ai_recommendation_df)
+        review_queue_df = build_review_queue(ai_recommendation_df)
+        open_count = unresolved_review_count(review_queue_df)
 
-        add_audit_event("Artifacts Generated", "ERD, DDL, SQL, Data Dictionary, Technical Spec, DQ Rules, AI Recommendations")
+        tabs = st.tabs([
+            "ER Diagram", "Snowflake DDL", "Snowflake SQL", "Data Dictionary",
+            "Technical Spec", "DQ Rules", "🤖 AI Analysis", "🧠 Findings",
+            "👤 Human Review", "✅ Approval & Release", "📊 Observability", "🧾 Audit Trail"
+        ])
 
-
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
-            [
-                "ER Diagram",
-                "Snowflake DDL",
-                "Snowflake SQL",
-                "Data Dictionary",
-                "Technical Spec",
-                "DQ Rules",
-                "🤖 AI Analysis",
-                "🧠 AI Intelligence",
-                "👤 Human Review",
-                "✅ Approval & Deployment",
-                "📊 Observability",
-                "🧾 Audit Trail",
-            ]
-        )
-
-        with tab1:
+        with tabs[0]:
             st.subheader("Entity Relationship Diagram")
             st.graphviz_chart(graphviz_dot)
             st.download_button("Download ER Diagram", graphviz_dot, file_name="er_diagram.dot", mime="text/plain")
 
-        with tab2:
+        with tabs[1]:
+            st.subheader("Snowflake Target DDL")
+            st.caption("Only explicit constants/defaults extracted from Informatica are included. Missing values are never invented.")
             st.code(ddl, language="sql")
             st.download_button("Download DDL", ddl, file_name="snowflake_ddl.sql", mime="text/plain")
 
-        with tab3:
+        with tabs[2]:
+            st.subheader("Snowflake Transformation SQL")
+            st.caption("Derived expressions, explicit constants/defaults, source filters, and unresolved fields are visible in the generated SQL.")
             st.code(sql, language="sql")
-            st.download_button("Download SQL", sql, file_name="snowflake_sql.sql", mime="text/plain")
+            st.download_button("Download SQL", sql, file_name="snowflake_transformation.sql", mime="text/plain")
 
-        with tab4:
+        with tabs[3]:
             st.dataframe(dictionary_df, use_container_width=True)
-            st.download_button(
-                "Download Data Dictionary",
-                dictionary_df.to_csv(index=False),
-                file_name="data_dictionary.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download Data Dictionary", dictionary_df.to_csv(index=False), file_name="data_dictionary.csv", mime="text/csv")
 
-        with tab5:
+        with tabs[4]:
             st.dataframe(tech_spec_df, use_container_width=True)
-            st.download_button(
-                "Download Technical Spec",
-                tech_spec_df.to_csv(index=False),
-                file_name="technical_spec.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download Technical Spec", tech_spec_df.to_csv(index=False), file_name="technical_spec.csv", mime="text/csv")
 
-        with tab6:
+        with tabs[5]:
             st.dataframe(dq_df, use_container_width=True)
             st.download_button("Download DQ Rules", dq_df.to_csv(index=False), file_name="dq_rules.csv", mime="text/csv")
 
-        with tab7:
+        with tabs[6]:
             st.subheader("AI Metadata Analysis")
-            st.info("AI analysis uses the Canonical Metadata Model and only the first 100 rows. Legacy migration findings remain subject to human review.")
-            join_count = normalized_df[normalized_df["lookup_table"].fillna("") != ""].shape[0]
-            st.metric("Join Relationships Detected", join_count)
-
-            if st.button("Generate AI Insights"):
-                with st.spinner("Analyzing canonical metadata using AI..."):
+            st.caption("AI analysis is advisory. The governed Release Gate remains the decision point.")
+            if st.button("Generate AI Insights", key="generate_ai_insights"):
+                with st.spinner("Analyzing canonical metadata..."):
                     ai_response = generate_ai_analysis(normalized_df)
-                    add_audit_event("AI Analysis Completed", "AI metadata analysis generated")
+                    add_audit_event("AI Analysis Completed", "Metadata analysis generated")
                     st.markdown(ai_response)
                     st.download_button("Download AI Analysis", ai_response, file_name="ai_analysis.txt", mime="text/plain")
 
-        with tab8:
-            st.subheader("AI Intelligence Layer")
-            st.caption("Rule-based intelligence over the Canonical Metadata Model. This layer prepares items for human review.")
-
-            rec_col1, rec_col2, rec_col3 = st.columns(3)
-            high_count = int((ai_recommendation_df["Severity"] == "HIGH").sum()) if not ai_recommendation_df.empty else 0
-            medium_count = int((ai_recommendation_df["Severity"] == "MEDIUM").sum()) if not ai_recommendation_df.empty else 0
-            low_count = int((ai_recommendation_df["Severity"] == "LOW").sum()) if not ai_recommendation_df.empty else 0
-            rec_col1.metric("High Priority", high_count)
-            rec_col2.metric("Medium Priority", medium_count)
-            rec_col3.metric("Low Priority", low_count)
-
+        with tabs[7]:
+            st.subheader("Validation, Migration Risks & Recommendations")
+            p1, p2, p3 = st.columns(3)
+            p1.metric("High Priority", int((ai_recommendation_df["Severity"] == "HIGH").sum()))
+            p2.metric("Medium Priority", int((ai_recommendation_df["Severity"] == "MEDIUM").sum()))
+            p3.metric("Open Review Items", open_count)
             st.dataframe(ai_recommendation_df, use_container_width=True)
-            st.download_button(
-                "Download AI Recommendations",
-                ai_recommendation_df.to_csv(index=False),
-                file_name="ai_recommendations.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download Findings", ai_recommendation_df.to_csv(index=False), file_name="delivery_findings.csv", mime="text/csv")
 
-        with tab9:
+        with tabs[8]:
             st.subheader("Human Review Queue")
-            st.caption("Human-in-the-loop review before approval and deployment.")
+            st.caption("Approved or rejected items leave the open queue and appear in Review History.")
 
-            review_queue_df = generate_review_queue(ai_recommendation_df)
-            st.dataframe(review_queue_df, use_container_width=True)
+            open_queue = review_queue_df[review_queue_df["Queue Status"] == "Open"].copy()
+            closed_queue = review_queue_df[review_queue_df["Queue Status"] == "Closed"].copy()
 
-            if not review_queue_df.empty:
-                selected_review_id = st.selectbox("Select Review Item", review_queue_df["Review ID"].tolist())
-                reviewer_name = st.text_input("Reviewer Name", value="Amit Singh")
-                reviewer_decision = st.selectbox("Reviewer Decision", ["Pending", "Approved", "Rejected", "Request Changes"])
-                reviewer_comment = st.text_area("Reviewer Comment", value="Reviewed as part of metadata governance workflow.")
+            q1, q2 = st.columns(2)
+            q1.metric("Open", len(open_queue))
+            q2.metric("Closed", len(closed_queue))
 
-                if st.button("Save Review Decision"):
-                    st.session_state.review_decisions[selected_review_id] = reviewer_decision
-                    add_audit_event(
-                        "Human Review Decision Saved",
-                        f"{selected_review_id}: {reviewer_decision} | {reviewer_comment}",
-                        actor=reviewer_name,
-                    )
-                    st.success(f"Saved decision for {selected_review_id}: {reviewer_decision}")
+            if open_queue.empty:
+                st.success("No open review items remain.")
+            else:
+                st.dataframe(open_queue, use_container_width=True)
+                selected_review_id = st.selectbox("Select open item", open_queue["Review ID"].tolist(), key="review_item")
+                reviewer_name = st.text_input("Reviewer name", value="Amit Singh", key="reviewer_name")
+                reviewer_decision = st.selectbox("Decision", ["Approved", "Rejected", "Request Changes"], key="review_decision")
+                reviewer_comment = st.text_area("Reviewer comment", value="", key="review_comment")
 
-        with tab10:
-            st.subheader("Approval & Deployment Readiness")
-            st.caption("This is a simulated deployment gate. No production deployment is triggered from the demo.")
+                if st.button("Save Review Decision", key="save_review"):
+                    st.session_state.review_decisions[selected_review_id] = {
+                        "decision": reviewer_decision,
+                        "reviewer": reviewer_name,
+                        "comment": reviewer_comment,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    st.session_state.review_history.append({
+                        "Review ID": selected_review_id,
+                        "Decision": reviewer_decision,
+                        "Reviewer": reviewer_name,
+                        "Comment": reviewer_comment,
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    })
+                    add_audit_event("Review Decision Recorded", f"{selected_review_id}: {reviewer_decision}", actor=reviewer_name)
+                    st.success(f"{selected_review_id} moved from the open queue to review history.")
+                    st.rerun()
 
-            st.session_state.workflow_status = st.selectbox(
-                "Workflow Status",
-                ["Draft", "Under Review", "Approved", "Rejected"],
-                index=["Draft", "Under Review", "Approved", "Rejected"].index(st.session_state.workflow_status),
+            if not closed_queue.empty:
+                with st.expander("Review History", expanded=False):
+                    st.dataframe(closed_queue, use_container_width=True)
+
+        with tabs[9]:
+            st.subheader("Approval & Release Gate")
+            st.caption("The release package stays locked until all review items are closed and an approver records the final decision.")
+
+            # Rebuild after any review decision.
+            review_queue_df = build_review_queue(ai_recommendation_df)
+            open_count = unresolved_review_count(review_queue_df)
+            can_approve = open_count == 0
+
+            status_options = ["Draft", "Under Review", "Approved with Conditions", "Approved", "Rejected"]
+            current_status = st.session_state.workflow_status
+            if current_status not in status_options:
+                current_status = "Draft"
+
+            requested_status = st.selectbox(
+                "Final workflow status",
+                status_options,
+                index=status_options.index(current_status),
+                key="workflow_status_selector",
             )
 
-            if st.session_state.workflow_status == "Approved":
-                st.success("Deployment Status: READY FOR DEV DEPLOYMENT")
+            if requested_status in ["Approved", "Approved with Conditions"] and not can_approve:
+                st.error(f"Release is blocked: {open_count} review item(s) remain open.")
+                st.session_state.workflow_status = "Under Review"
+            else:
+                st.session_state.workflow_status = requested_status
+
+            if st.session_state.workflow_status in ["Approved", "Approved with Conditions"]:
+                st.success("Release Gate: APPROVED")
             elif st.session_state.workflow_status == "Rejected":
-                st.error("Deployment Status: BLOCKED")
+                st.error("Release Gate: BLOCKED")
             else:
-                st.warning("Deployment Status: NOT READY - approval required")
+                st.warning("Release Gate: PENDING REVIEW")
 
-            if st.button("Record Workflow Status"):
-                add_audit_event("Workflow Status Updated", f"Status changed to {st.session_state.workflow_status}")
-                st.success("Workflow status recorded in audit trail.")
-            st.markdown("---")
-            st.subheader("Approved Release Package")
+            if st.button("Record Workflow Status", key="record_workflow"):
+                add_audit_event("Workflow Status Updated", st.session_state.workflow_status)
+                st.success("Workflow status recorded.")
 
-            if st.session_state.workflow_status != "Approved":
+            manifest = generate_deployment_manifest(uploaded_file.name, st.session_state.workflow_status, observability_metrics)
+            st.code(manifest, language="json")
 
-                st.warning(
-                    "Project package is locked. "
-                    "Complete Human Review and Approval before download."
-                )
-
-            else:
-
-                deployment_manifest = generate_deployment_manifest(
-                    uploaded_file.name,
-                    st.session_state.workflow_status,
-                    observability_metrics
-                )
-
-                audit_df_for_zip = pd.DataFrame(
-                    st.session_state.audit_events
-                )
-
+            if st.session_state.workflow_status in ["Approved", "Approved with Conditions"]:
                 zip_buffer = BytesIO()
-
-                with zipfile.ZipFile(
-                    zip_buffer,
-                    "w",
-                    zipfile.ZIP_DEFLATED
-                ) as zip_file:
-
-                    zip_file.writestr(
-                        "canonical_metadata_model.csv",
-                        normalized_df.to_csv(index=False)
-                    )
-
-                    zip_file.writestr(
-                        "snowflake_ddl.sql",
-                        ddl
-                    )
-
-                    zip_file.writestr(
-                        "snowflake_sql.sql",
-                        sql
-                    )
-
-                    zip_file.writestr(
-                        "er_diagram.dot",
-                        graphviz_dot
-                    )
-
-                    zip_file.writestr(
-                        "data_dictionary.csv",
-                        dictionary_df.to_csv(index=False)
-                    )
-
-                    zip_file.writestr(
-                        "technical_specification.csv",
-                        tech_spec_df.to_csv(index=False)
-                    )
-
-                    zip_file.writestr(
-                        "dq_rules.csv",
-                        dq_df.to_csv(index=False)
-                    )
-
-                    zip_file.writestr(
-                        "ai_recommendations.csv",
-                        ai_recommendation_df.to_csv(index=False)
-                    )
-
-                    zip_file.writestr(
-                        "deployment_manifest.json",
-                        deployment_manifest
-                    )
-
-                    zip_file.writestr(
-                        "audit_log.csv",
-                        audit_df_for_zip.to_csv(index=False)
-                    )
-
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr("canonical_metadata_model.csv", normalized_df.to_csv(index=False))
+                    zf.writestr("snowflake_ddl.sql", ddl)
+                    zf.writestr("snowflake_transformation.sql", sql)
+                    zf.writestr("er_diagram.dot", graphviz_dot)
+                    zf.writestr("data_dictionary.csv", dictionary_df.to_csv(index=False))
+                    zf.writestr("technical_specification.csv", tech_spec_df.to_csv(index=False))
+                    zf.writestr("dq_rules.csv", dq_df.to_csv(index=False))
+                    zf.writestr("delivery_findings.csv", ai_recommendation_df.to_csv(index=False))
+                    zf.writestr("review_history.csv", pd.DataFrame(st.session_state.review_history).to_csv(index=False))
+                    zf.writestr("deployment_manifest.json", manifest)
+                    zf.writestr("audit_log.csv", pd.DataFrame(st.session_state.audit_events).to_csv(index=False))
                 zip_buffer.seek(0)
+                st.download_button("🚀 Download Approved Delivery Packet", zip_buffer,
+                                   file_name="de_copilot_approved_delivery_packet.zip",
+                                   mime="application/zip", use_container_width=True)
+            else:
+                st.info("Close all review items and approve the workflow to unlock the delivery packet.")
 
-                st.success(
-                    "Approval completed. Release package unlocked."
-                )
+            st.download_button("Download Deployment Manifest", manifest,
+                               file_name="deployment_manifest.json", mime="application/json")
 
-                st.download_button(
-                    "🚀 Download Approved Release Package",
-                    data=zip_buffer,
-                    file_name="de_copilot_approved_release.zip",
-                    mime="application/zip",
-                    use_container_width=True,
-                )
-
-            updated_manifest = generate_deployment_manifest(uploaded_file.name, st.session_state.workflow_status, observability_metrics)
-            st.code(updated_manifest, language="json")
-            st.download_button(
-                "Download Deployment Manifest",
-                updated_manifest,
-                file_name="deployment_manifest.json",
-                mime="application/json",
-            )
-
-        with tab11:
+        with tabs[10]:
             st.subheader("Observability Dashboard")
-            st.caption("Metadata, generation, review, and governance coverage metrics.")
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Target Tables", observability_metrics["Target Tables"])
-            m2.metric("Canonical Columns", observability_metrics["Canonical Columns"])
-            m3.metric("Metadata Coverage", f"{observability_metrics['Metadata Coverage %']}%")
-            m4.metric("DQ Coverage", f"{observability_metrics['DQ Coverage %']}%")
-
-            m5, m6, m7, m8 = st.columns(4)
-            m5.metric("PII Columns", observability_metrics["PII Columns"])
-            m6.metric("Join Relationships", observability_metrics["Join Relationships"])
-            m7.metric("Metadata Warnings", observability_metrics["Metadata Warnings"])
-            m8.metric("AI Recommendations", observability_metrics["AI Recommendations"])
-
-            st.markdown("### Observability Summary")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Target Tables", observability_metrics["Target Tables"])
+            c2.metric("Canonical Fields", observability_metrics["Canonical Columns"])
+            c3.metric("Metadata Coverage", f"{observability_metrics['Metadata Coverage %']}%")
+            c4.metric("Open Reviews", open_count)
             st.dataframe(pd.DataFrame([observability_metrics]), use_container_width=True)
 
-        with tab12:
+        with tabs[11]:
             st.subheader("Audit Trail")
-            st.caption("Traceability of metadata processing, artifact generation, review, approval, and deployment readiness events.")
-
             audit_df = pd.DataFrame(st.session_state.audit_events)
             if audit_df.empty:
                 st.info("No audit events recorded yet.")
             else:
                 st.dataframe(audit_df, use_container_width=True)
-                st.download_button("Download Audit Log", audit_df.to_csv(index=False), file_name="audit_log.csv", mime="text/csv")
+                st.download_button("Download Audit Log", audit_df.to_csv(index=False),
+                                   file_name="audit_log.csv", mime="text/csv")
 
-    except Exception as e:
-        st.error("The STTM could not be processed.")
-        st.exception(e)
-
+    except Exception as exc:
+        st.error("The input could not be processed.")
+        st.exception(exc)
 else:
-    st.info("Start from a Business Requirement / STTM or an Informatica PowerCenter XML export.")
+    st.info("Start from a Business Requirement / STTM or a Legacy Informatica PowerCenter XML export.")

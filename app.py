@@ -31,6 +31,32 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 st.title("⚙️ DE Copilot")
 
+st.markdown("**Explore DE Copilot Applications**")
+
+nav1, nav2, nav3 = st.columns(3)
+
+with nav1:
+    st.link_button(
+        "Metadata Intelligence",
+        "https://de-copilot-sttm-factory.streamlit.app",
+        use_container_width=True,
+    )
+
+with nav2:
+    st.link_button(
+        "Opportunity Intelligence",
+        "https://de-copilot-opportunity-intelligence.streamlit.app",
+        use_container_width=True,
+    )
+
+with nav3:
+    st.link_button(
+        "DE Copilot Website",
+        "https://dataengineeringcopilot.com",
+        use_container_width=True,
+    )
+
+
 
 st.markdown(
     """
